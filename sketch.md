@@ -100,3 +100,11 @@ This project is a Python tool that:
   - Preserve `toc-bookmarks` as a compatibility command while making `tocsmith` primary
   - Release: 1.0 (build 345)
   - Status: complete
+
+  ### Milestone - 7
+  - Publish TocSmith through the `SomerledDesign/homebrew-tap` Homebrew tap
+  - Pin the release archive and Python dependency with SHA-256 checksums
+  - Test a clean formula installation and real PDF safety path
+  - Raise the `pypdf` floor to a current patched release
+  - Release: 1.0 (build 346)
+  - Status: in progress

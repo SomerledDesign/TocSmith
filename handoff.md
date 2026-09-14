@@ -1,8 +1,18 @@
 # Handoff
 
-Current milestone: Milestone 6 TocSmith 1.0 repository preparation complete
+Current milestone: Milestone 7 Homebrew distribution in progress
 
 Completed work:
+- Began the Homebrew distribution milestone using the conventional
+  `SomerledDesign/homebrew-tap` repository and the intended one-line install
+  command `brew install SomerledDesign/tap/tocsmith`.
+- Raised the `pypdf` dependency floor from the vulnerable pre-6 series to
+  `pypdf>=6.18.1,<7`; PyPI reports 6.18.1 as the current release with no listed
+  advisories at packaging time.
+- Advanced the cumulative build identifier to 346 for the dependency-security
+  and Homebrew packaging release.
+- Installed TocSmith against `pypdf` 6.18.1 and re-ran all 60 tests
+  successfully before formula construction.
 - Branded the public project and primary command as TocSmith while retaining
   `toc-bookmarks` as a compatibility console-script alias.
 - Set the first public release to version 1.0, cumulative build 345, with a
@@ -173,6 +183,8 @@ Known constraints:
 Active Mode: General Systems Mode
 Last successful build command: .venv/bin/python -m unittest discover -s tests
 Outstanding blockers:
+- Homebrew formula construction and clean-install validation are still in
+  progress; the `SomerledDesign/homebrew-tap` repository now exists.
 - None for the TocSmith 1.0 repository preparation; packaging installation,
   the primary launcher, version reporting, privacy scan, and all 60 tests pass.
 - None for Milestone 5; crop inference, mark detection, rotation normalization,

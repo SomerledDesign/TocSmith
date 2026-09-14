@@ -118,7 +118,7 @@ class PdfIoTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0)
-        self.assertEqual(completed.stdout.strip(), "TocSmith 1.0 (345)")
+        self.assertEqual(completed.stdout.strip(), "TocSmith 1.0 (346)")
 
     def test_pyproject_declares_console_script(self) -> None:
         project_root = pathlib.Path(__file__).resolve().parents[1]

@@ -59,6 +59,17 @@ repository:
 The neutral default watermark is `TocSmith`. Use `--watermark ""` to disable
 the footer.
 
+### Homebrew
+
+On macOS or Linux with Homebrew installed:
+
+```sh
+brew install SomerledDesign/tap/tocsmith
+```
+
+Homebrew installs TocSmith and its Python runtime dependency in an isolated
+environment. No manual virtual-environment setup is required.
+
 ### Windows
 
 From PowerShell:
@@ -101,8 +112,8 @@ The evolving design, completed milestones, and known weak spots live in
 TocSmith keeps a public release version and a separate cumulative build number:
 
 - Release: **1.0**
-- Build: **345**
-- Display: **TocSmith 1.0 (345)**
+- Build: **346**
+- Display: **TocSmith 1.0 (346)**
 
 The release version communicates compatibility. The build number preserves the
 project's longer experimental lineage. Both values have a single source of
@@ -119,4 +130,3 @@ Run the complete test suite with:
 ```sh
 .venv/bin/python -m unittest discover -s tests
 ```
-

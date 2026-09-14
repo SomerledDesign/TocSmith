@@ -7,7 +7,7 @@ name = "tocsmith"
 version = "1.0"
 description = "Forge navigable, finished PDFs from printed tables of contents."
 requires-python = ">=3.9"
-dependencies = ["pypdf>=4,<6"]
+dependencies = ["pypdf>=6.18.1,<7"]
 
 [project.scripts]
 tocsmith = "toc_bookmarks.__main__:main"
