@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+venv_dir="${TOC_BOOKMARKS_VENV:-$script_dir/.venv}"
+venv_python="$venv_dir/bin/python"
+
+cd "$script_dir"
+
+ensure_environment() {
+    if [ ! -x "$venv_python" ]; then
+        echo "Creating local Python environment at $venv_dir" >&2
+        python3 -m venv "$venv_dir"
+    fi
+
+    if ! "$venv_python" -c "import pypdf" >/dev/null 2>&1; then
+        echo "Installing project dependencies into $venv_dir" >&2
+        "$venv_python" -m pip install -e .
+    fi
+}
+
+case "${1-}" in
+    -h|--help)
+        exec python3 -m toc_bookmarks "$@"
+        ;;
+    --setup)
+        ensure_environment
+        echo "toc-bookmarks dependencies are ready in $venv_dir"
+        ;;
+    *)
+        ensure_environment
+        exec "$venv_python" -m toc_bookmarks "$@"
+        ;;
+esac

@@ -1,0 +1,44 @@
+# PDF inputs and generated output
+pdfs/
+*.pdf
+*.pdf.log.txt
+*.bookmarked.*
+
+# Private/local configuration and credentials
+.env
+.env.*
+!.env.example
+.tocsmith/
+.tocsmith.local.*
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# Python environments and generated packages
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Machine, editor, and location-specific metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tocsmith"
+version = "1.0"
+description = "Forge navigable, finished PDFs from printed tables of contents."
+requires-python = ">=3.9"
+dependencies = ["pypdf>=4,<6"]
+
+[project.scripts]
+tocsmith = "toc_bookmarks.__main__:main"
+toc-bookmarks = "toc_bookmarks.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
