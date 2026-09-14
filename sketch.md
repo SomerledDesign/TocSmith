@@ -108,4 +108,4 @@ This project is a Python tool that:
   - Install an offline section-1 manual available through `man tocsmith`
   - Raise the `pypdf` floor to a current patched release
   - Release: 1.0 (build 346)
-  - Status: in progress
+  - Status: complete

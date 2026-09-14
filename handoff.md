@@ -1,8 +1,19 @@
 # Handoff
 
-Current milestone: Milestone 7 Homebrew distribution in progress
+Current milestone: Milestone 7 Homebrew distribution complete
 
 Completed work:
+- Published `Formula/tocsmith.rb` in
+  `https://github.com/SomerledDesign/homebrew-tap`, enabling the one-line
+  command `brew install SomerledDesign/tap/tocsmith`.
+- Tagged the final packaged source as `v1.0.0`; the formula pins its release
+  archive, `pypdf` 6.18.1, `flit-core` 4.0.2, and `setuptools` 84.0.0 with
+  SHA-256 checksums.
+- Passed `brew audit --strict`, `brew style`, a from-source formula build, the
+  formula's functional blank-PDF analysis test, and a fresh install from the
+  public GitHub tap.
+- Verified the public installation reports `TocSmith 1.0 (346)` and installs
+  the manual into Homebrew's `man1` path for `man tocsmith`.
 - Began the Homebrew distribution milestone using the conventional
   `SomerledDesign/homebrew-tap` repository and the intended one-line install
   command `brew install SomerledDesign/tap/tocsmith`.
@@ -177,6 +188,8 @@ Remaining tasks:
 - Tighten the remaining 4DOS middle-section misses, especially `Configuration Directives`, `Color Directives`, `Batch File Variables`, and `Multitasking and Disk Swapping`.
 
 Known constraints:
+- TocSmith does not yet declare an SPDX software license; the third-party
+  Homebrew formula accurately records this as `license :cannot_represent`.
 - Anchor matching is heuristic and can overmatch generic titles like `Files`, `Index`, or `Getting Help`.
 - Text-layer extraction/OCR artifacts can still distort titles, such as umlauts or ligatures rendered incorrectly.
 - Full-book analysis runs are becoming expensive enough that large PDFs may need more targeted verification while heuristics are still evolving.
@@ -184,10 +197,10 @@ Known constraints:
 - Bookmark writing currently creates a new output PDF; it does not merge with or preserve existing bookmark trees intentionally.
 
 Active Mode: General Systems Mode
-Last successful build command: .venv/bin/python -m unittest discover -s tests
+Last successful build command: brew install SomerledDesign/tap/tocsmith
 Outstanding blockers:
-- Homebrew formula construction and clean-install validation are still in
-  progress; the `SomerledDesign/homebrew-tap` repository now exists.
+- None for Homebrew distribution; the public one-line install, functional
+  formula test, version command, and installed man page all pass.
 - None for the TocSmith 1.0 repository preparation; packaging installation,
   the primary launcher, version reporting, privacy scan, and all 60 tests pass.
 - None for Milestone 5; crop inference, mark detection, rotation normalization,
