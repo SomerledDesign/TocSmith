@@ -13,6 +13,9 @@ Completed work:
   and Homebrew packaging release.
 - Installed TocSmith against `pypdf` 6.18.1 and re-ran all 60 tests
   successfully before formula construction.
+- Added a section-1 manual covering modes, options, output files, exit status,
+  examples, and limitations; the Homebrew formula installs it for
+  `man tocsmith`.
 - Branded the public project and primary command as TocSmith while retaining
   `toc-bookmarks` as a compatibility console-script alias.
 - Set the first public release to version 1.0, cumulative build 345, with a

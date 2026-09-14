@@ -1,0 +1,97 @@
+.TH TOCSMITH 1 "September 13, 2026" "TocSmith 1.0 (346)" "User Commands"
+.SH NAME
+tocsmith \- forge navigable, finished PDFs from printed tables of contents
+.SH SYNOPSIS
+.B tocsmith
+.RI [ options ]
+.I pdf
+.SH DESCRIPTION
+.B TocSmith
+examines the extractable text layer of a PDF, locates likely table-of-contents
+pages, resolves their entries to document headings, and can write a finished
+copy with a nested sidebar outline.
+.PP
+When writing a PDF, TocSmith can also crop oversized pages when credible crop
+marks identify the intended trim, normalize rotated pages, add a footer
+watermark, and record its decisions in a text log. The input PDF is not
+modified.
+.PP
+With no writing option, TocSmith performs analysis only and prints JSON to
+standard output.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show command-line help and exit.
+.TP
+.B \-\-version
+Show the TocSmith release and build number and exit.
+.TP
+.B \-\-write-bookmarks
+Write a new PDF with conservative sidebar bookmarks and page finishing.
+Without an explicit output path, the destination is named by adding
+.B .bookmarked
+before the input filename extension.
+.TP
+.BI \-\-output " path"
+Write the generated PDF to
+.IR path .
+Supplying this option implies
+.BR \-\-write-bookmarks .
+.TP
+.BI \-\-min-match-score " score"
+Set the minimum anchor confidence for root bookmark entries. The default is
+0.85. Child entries beneath an accepted parent may use a slightly lower guarded
+threshold.
+.TP
+.BI \-\-watermark " text"
+Set the footer text written on generated pages. The default is
+.BR TocSmith .
+Pass an empty string to disable the footer.
+.SH OUTPUT FILES
+For an input named
+.BR manual.pdf ,
+the default writing mode creates:
+.TP
+.B manual.bookmarked.pdf
+The finished PDF containing generated sidebar bookmarks.
+.TP
+.B manual.bookmarked.pdf.log.txt
+A human-readable record of accepted and skipped TOC entries, match scores,
+anchor pages, crop count, and watermark count.
+.SH EXIT STATUS
+TocSmith exits with status 0 after successful analysis or writing. A nonzero
+status indicates invalid input, a missing dependency, a PDF without extractable
+text when writing was requested, or an output failure.
+.SH EXAMPLES
+Analyze a PDF and print JSON:
+.PP
+.EX
+tocsmith manual.pdf
+.EE
+.PP
+Create the default finished copy:
+.PP
+.EX
+tocsmith manual.pdf --write-bookmarks
+.EE
+.PP
+Choose the output and a private footer without storing that footer in source
+control:
+.PP
+.EX
+tocsmith manual.pdf --output finished.pdf --watermark "Archive copy"
+.EE
+.PP
+Create a finished copy without a footer:
+.PP
+.EX
+tocsmith manual.pdf --write-bookmarks --watermark ""
+.EE
+.SH NOTES
+TocSmith requires an extractable text layer. Scan-only PDFs must be processed
+with OCR before TocSmith can derive reliable headings and bookmarks.
+.PP
+TOC interpretation and anchor selection are heuristic. TocSmith deliberately
+skips uncertain entries and writes a decision log for review.
+.SH SEE ALSO
+.BR python3 (1)

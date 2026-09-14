@@ -68,7 +68,8 @@ brew install SomerledDesign/tap/tocsmith
 ```
 
 Homebrew installs TocSmith and its Python runtime dependency in an isolated
-environment. No manual virtual-environment setup is required.
+environment. No manual virtual-environment setup is required. After
+installation, run `man tocsmith` for the complete offline command reference.
 
 ### Windows
 

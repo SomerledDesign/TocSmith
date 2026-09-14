@@ -105,6 +105,7 @@ This project is a Python tool that:
   - Publish TocSmith through the `SomerledDesign/homebrew-tap` Homebrew tap
   - Pin the release archive and Python dependency with SHA-256 checksums
   - Test a clean formula installation and real PDF safety path
+  - Install an offline section-1 manual available through `man tocsmith`
   - Raise the `pypdf` floor to a current patched release
   - Release: 1.0 (build 346)
   - Status: in progress

@@ -129,6 +129,14 @@ class PdfIoTests(unittest.TestCase):
             pyproject,
         )
 
+    def test_man_page_documents_the_public_cli(self) -> None:
+        project_root = pathlib.Path(__file__).resolve().parents[1]
+        man_page = (project_root / "docs" / "tocsmith.1").read_text(encoding="utf-8")
+        self.assertIn('.TH TOCSMITH 1', man_page)
+        self.assertIn('\\-\\-write-bookmarks', man_page)
+        self.assertIn('\\-\\-watermark', man_page)
+        self.assertIn('TocSmith 1.0 (346)', man_page)
+
 
 if __name__ == "__main__":
     unittest.main()
