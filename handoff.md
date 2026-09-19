@@ -1,8 +1,16 @@
 # Handoff
 
-Current milestone: Milestone 7 Homebrew distribution complete
+Current milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
 
 Completed work:
+- Implemented Milestone 4 conservative in-page TOC link annotations: when writing
+  bookmarked PDFs, place borderless PDF link annotations over confident TOC entry
+  text rectangles that jump to resolved destinations; skip missing/uncertain
+  geometry and log LINK/SKIP decisions with rectangle details.
+- Extended TocLayoutLine / TocEntry with width/height (and toc_y) captured from
+  estimated text-span extents during layout extraction.
+- Advanced the cumulative build identifier to 347 for the TOC link-annotation work.
+- Added writer tests covering confident link placement and uncertain-geometry skips.
 - Published `Formula/tocsmith.rb` in
   `https://github.com/SomerledDesign/homebrew-tap`, enabling the one-line
   command `brew install SomerledDesign/tap/tocsmith`.
@@ -179,7 +187,7 @@ Remaining tasks:
 - Tune the conservative bookmark-writing thresholds on real PDFs.
 - Use captured TOC layout/font data in a later pass as an offline classification aid rather than directly overriding the working hierarchy heuristic.
 - Tighten remaining same-page hierarchy misses like Appendix/Getting Help/DriveSpace cases by extending the TOC-side peer normalization rules without making them document-specific.
-- Add actual clickable TOC-page link annotations by locating TOC text rectangles and placing PDF link annotations over them.
+- Tune remaining Milestone 4 confidence / existing-outline preservation work beyond the new conservative TOC link annotations.
 - Decide how to preserve existing good outline items while adding missing TOC-derived children.
 - Decide whether the current JSON CLI is the final output format.
 - Audit remaining anchor outliers that still land on the wrong nearby page even after the heading-window matcher, especially repeated CONFIG/AUTOEXEC-style sections.

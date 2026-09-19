@@ -53,7 +53,7 @@ This project is a Python tool that:
   - Some anchor pages still drift
   - OCR/text-layer artifacts can distort title text
   - Large or noisy TOCs still need tuning
-  - TOC page link annotations are not implemented yet
+  - TOC page link annotations are implemented conservatively (skip uncertain geometry)
   
   ## Milestones 
 
@@ -88,6 +88,7 @@ This project is a Python tool that:
   - Add clickable TOC text inside the PDF page itself by placing link annotations over the TOC text rectangles
   - Preserve existing good bookmarks and add missing children where possible
   - Improve confidence handling so the script works on the broadest possible range of PDFs
+  - Status: link annotations complete (conservative); bookmark-preservation / confidence tuning still open
 
   ### Milestone - 5 
   - Crop pages to layout lines, if larger than standard and crop lines are visible.

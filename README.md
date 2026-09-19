@@ -17,6 +17,8 @@ TocSmith can:
 - crop oversized pages when credible crop marks identify the intended trim
 - normalize rotated pages and add a configurable footer watermark
 - write a human-readable decision log explaining every accepted or skipped item
+- when writing bookmarks, place conservative clickable link annotations over
+  confident TOC entry text rectangles so in-page TOC lines jump to destinations
 
 The matching is deliberately conservative. A printed page number is not always
 the physical PDF page number, so TocSmith prefers matching TOC text to heading
@@ -102,7 +104,10 @@ This is a broad-range heuristic tool, not a collection of fixes tied to one
 sample document. Real-world PDFs remain messy: text extraction can damage
 ligatures, headings can be repeated, and TOC indentation is not always
 reliable. TocSmith therefore records its decisions and skips uncertain entries
-instead of knowingly creating misleading links.
+instead of knowingly creating misleading links. The same conservatism applies to
+in-page TOC link annotations: only entries with a resolved destination and a
+credible TOC text rectangle receive a link; uncertain geometry is skipped and
+recorded in the decision log.
 
 The evolving design, completed milestones, and known weak spots live in
 [`sketch.md`](sketch.md). Session continuity and verification status live in
@@ -113,8 +118,8 @@ The evolving design, completed milestones, and known weak spots live in
 TocSmith keeps a public release version and a separate cumulative build number:
 
 - Release: **1.0**
-- Build: **346**
-- Display: **TocSmith 1.0 (346)**
+- Build: **347**
+- Display: **TocSmith 1.0 (347)**
 
 The release version communicates compatibility. The build number preserves the
 project's longer experimental lineage. Both values have a single source of

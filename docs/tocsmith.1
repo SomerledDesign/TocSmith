@@ -1,4 +1,4 @@
-.TH TOCSMITH 1 "September 13, 2026" "TocSmith 1.0 (346)" "User Commands"
+.TH TOCSMITH 1 "September 13, 2026" "TocSmith 1.0 (347)" "User Commands"
 .SH NAME
 tocsmith \- forge navigable, finished PDFs from printed tables of contents
 .SH SYNOPSIS
@@ -13,8 +13,9 @@ copy with a nested sidebar outline.
 .PP
 When writing a PDF, TocSmith can also crop oversized pages when credible crop
 marks identify the intended trim, normalize rotated pages, add a footer
-watermark, and record its decisions in a text log. The input PDF is not
-modified.
+watermark, place conservative clickable link annotations over confident TOC
+entry text rectangles, and record its decisions in a text log. Uncertain TOC
+geometry is skipped rather than guessed. The input PDF is not modified.
 .PP
 With no writing option, TocSmith performs analysis only and prints JSON to
 standard output.
@@ -57,7 +58,7 @@ The finished PDF containing generated sidebar bookmarks.
 .TP
 .B manual.bookmarked.pdf.log.txt
 A human-readable record of accepted and skipped TOC entries, match scores,
-anchor pages, crop count, and watermark count.
+anchor pages, TOC link annotation decisions, crop count, and watermark count.
 .SH EXIT STATUS
 TocSmith exits with status 0 after successful analysis or writing. A nonzero
 status indicates invalid input, a missing dependency, a PDF without extractable

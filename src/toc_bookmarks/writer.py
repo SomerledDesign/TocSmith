@@ -10,7 +10,7 @@ human-readable log describing bookmark and finishing decisions.
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .analyzer import is_confident_bookmark_candidate
 from .finisher import DEFAULT_WATERMARK, finish_pdf_pages
@@ -52,7 +52,9 @@ def write_bookmarks_for_pdf(
     parent_by_level: Dict[int, Any] = {}
     accepted_entry_by_level: Dict[int, TocEntry] = {}
     written_count = 0
+    link_annotation_count = 0
     skipped_titles: List[str] = []
+    pending_link_entries: List[TocEntry] = []
     log_lines = [
         f"Input PDF: {input_file}",
         f"Output PDF: {destination}",
@@ -86,15 +88,29 @@ def write_bookmarks_for_pdf(
         _clear_deeper_levels(parent_by_level, entry.level)
         _clear_deeper_levels(accepted_entry_by_level, entry.level)
         written_count += 1
+        pending_link_entries.append(entry)
         log_lines.append(_format_log_line(entry, decision))
 
     finish_stats = finish_pdf_pages(writer.pages, watermark=watermark)
+    link_log_lines: List[str] = []
+    for entry in pending_link_entries:
+        link_decision = _try_add_toc_link_annotation(writer, entry)
+        if link_decision["linked"]:
+            link_annotation_count += 1
+        link_log_lines.append(_format_link_log_line(entry, link_decision))
+
+    log_lines.extend(["", "TOC link annotations:"])
+    if link_log_lines:
+        log_lines.extend(link_log_lines)
+    else:
+        log_lines.append("No bookmark entries were eligible for TOC link annotations.")
     log_lines.extend(
         [
             "",
             "Finishing:",
             f"Cropped oversized pages: {finish_stats.cropped_page_count}",
             f"Watermarked pages: {finish_stats.watermarked_page_count}",
+            f"TOC link annotations: {link_annotation_count}",
         ]
     )
     with destination.open("wb") as handle:
@@ -108,6 +124,7 @@ def write_bookmarks_for_pdf(
         skipped_titles=skipped_titles,
         cropped_page_count=finish_stats.cropped_page_count,
         watermarked_page_count=finish_stats.watermarked_page_count,
+        link_annotation_count=link_annotation_count,
     )
 
 
@@ -242,3 +259,116 @@ def _format_log_line(entry: TocEntry, decision: Dict[str, Any]) -> str:
         f"score={entry.anchor_match_score:.2f} | threshold={decision['threshold']:.2f} | "
         f"{entry.title} | {decision['reason']}"
     )
+
+def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]:
+    """@brief Place a conservative in-page TOC link annotation when geometry is clear.
+
+    Uncertain cases are skipped: missing TOC page/rectangle, missing destination,
+    out-of-range page indexes, or a writer that cannot accept annotations.
+    """
+    rect = _toc_link_rectangle(entry)
+    if rect is None:
+        return {
+            "linked": False,
+            "reason": "missing or uncertain TOC text rectangle",
+        }
+    if entry.toc_page_index is None or entry.anchor_page_index is None:
+        return {
+            "linked": False,
+            "reason": "missing TOC page or destination",
+        }
+    pages = getattr(writer, "pages", None)
+    page_count = len(pages) if pages is not None else 0
+    if page_count:
+        if not (0 <= entry.toc_page_index < page_count):
+            return {
+                "linked": False,
+                "reason": f"TOC page index {entry.toc_page_index} out of range",
+            }
+        if not (0 <= entry.anchor_page_index < page_count):
+            return {
+                "linked": False,
+                "reason": f"destination page index {entry.anchor_page_index} out of range",
+            }
+    add_annotation = getattr(writer, "add_annotation", None)
+    if not callable(add_annotation):
+        return {
+            "linked": False,
+            "reason": "writer does not support annotations",
+        }
+    try:
+        annotation = _create_internal_link_annotation(rect, entry.anchor_page_index)
+        add_annotation(entry.toc_page_index, annotation)
+    except Exception as exc:  # noqa: BLE001 - keep bookmark writing resilient
+        return {
+            "linked": False,
+            "reason": f"annotation failed: {exc}",
+        }
+    return {
+        "linked": True,
+        "reason": "TOC text rectangle linked to resolved destination",
+        "rect": rect,
+    }
+
+
+def _toc_link_rectangle(entry: TocEntry) -> Optional[Tuple[float, float, float, float]]:
+    """@brief Build a PDF link rectangle over confident TOC entry text bounds."""
+    if (
+        entry.toc_x is None
+        or entry.toc_y is None
+        or entry.toc_width is None
+        or entry.toc_height is None
+    ):
+        return None
+    if entry.toc_width < 8.0 or entry.toc_height < 4.0:
+        return None
+    height = entry.toc_height
+    title_estimate = max(len(entry.title), 1) * max(height / 1.2, 1.0) * 0.55
+    width = entry.toc_width
+    if entry.toc_width > title_estimate * 1.5:
+        width = min(entry.toc_width, max(title_estimate, height * 3.0))
+    if width < 8.0:
+        return None
+    x0 = entry.toc_x
+    x1 = entry.toc_x + width
+    y0 = entry.toc_y - (0.25 * height)
+    y1 = entry.toc_y + (0.85 * height)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _create_internal_link_annotation(
+    rect: Tuple[float, float, float, float],
+    target_page_index: int,
+) -> Any:
+    """@brief Construct a borderless internal PDF link annotation."""
+    try:
+        from pypdf.annotations import Link
+    except ImportError as exc:
+        raise RuntimeError(
+            "pypdf is required for TOC link annotations. Install dependencies first."
+        ) from exc
+    return Link(
+        rect=rect,
+        target_page_index=target_page_index,
+        border=[0, 0, 0],
+    )
+
+
+def _format_link_log_line(entry: TocEntry, decision: Dict[str, Any]) -> str:
+    """@brief Format one human-readable TOC link annotation decision."""
+    outcome = "LINK " if decision["linked"] else "SKIP "
+    toc_page = "?" if entry.toc_page_index is None else str(entry.toc_page_index)
+    dest = "?" if entry.anchor_page_index is None else str(entry.anchor_page_index)
+    rect = decision.get("rect")
+    rect_text = (
+        f"({rect[0]:.1f},{rect[1]:.1f},{rect[2]:.1f},{rect[3]:.1f})"
+        if isinstance(rect, tuple) and len(rect) == 4
+        else "n/a"
+    )
+    return (
+        f"{outcome} | toc_page={toc_page} | dest={dest} | rect={rect_text} | "
+        f"{entry.title} | {decision['reason']}"
+    )
+

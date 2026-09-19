@@ -9,14 +9,17 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from toc_bookmarks.__main__ import main
 from toc_bookmarks.models import AnalysisResult, BookmarkCoverage, TocCandidate, TocEntry
+from toc_bookmarks.finisher import FinishStats
 from toc_bookmarks.writer import write_bookmarks_for_pdf
 
 
 class _FakeWriter:
-    def __init__(self) -> None:
+    def __init__(self, page_count: int = 0) -> None:
         self.append_calls = []
         self.outlines = []
         self.pages = []
+        self._page_count = page_count
+        self.annotations = []
         self.written = False
 
     def append(self, reader, import_outline=False):
@@ -31,6 +34,9 @@ class _FakeWriter:
         }
         self.outlines.append(item)
         return item
+
+    def add_annotation(self, page_number, annotation):
+        self.annotations.append({"page_number": page_number, "annotation": annotation})
 
     def write(self, handle):
         handle.write(b"%PDF-FAKE")
@@ -310,6 +316,111 @@ class WriterTests(unittest.TestCase):
             with mock.patch("toc_bookmarks.writer.analyze_pdf_file", return_value=analysis):
                 with self.assertRaises(RuntimeError):
                     write_bookmarks_for_pdf(src.name)
+
+
+    def test_writes_toc_link_annotations_for_confident_layout_rects(self) -> None:
+        analysis = AnalysisResult(
+            is_ocr_text_available=True,
+            toc_entries=[
+                TocEntry(
+                    title="Chapter 1 Getting Started",
+                    level=1,
+                    anchor_page_index=2,
+                    anchor_match_score=0.95,
+                    toc_page_index=0,
+                    toc_x=72.0,
+                    toc_y=700.0,
+                    toc_width=220.0,
+                    toc_height=12.0,
+                    toc_font_name="/Helvetica",
+                ),
+                TocEntry(
+                    title="Installing the Tool",
+                    level=2,
+                    anchor_page_index=5,
+                    anchor_match_score=0.91,
+                    toc_page_index=0,
+                    toc_x=72.0,
+                    toc_y=680.0,
+                    toc_width=200.0,
+                    toc_height=12.0,
+                    toc_font_name="/Helvetica",
+                ),
+            ],
+            toc_candidates=[TocCandidate(page_index=0)],
+            bookmark_coverage=BookmarkCoverage([], [], []),
+        )
+        fake_writer = _FakeWriter(page_count=6)
+        fake_writer.pages = list(range(6))
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as src:
+            output_path = pathlib.Path(src.name).with_suffix(".bookmarked.pdf")
+            with mock.patch("toc_bookmarks.writer.analyze_pdf_file", return_value=analysis):
+                with mock.patch("toc_bookmarks.writer._open_pdf_reader", return_value=object()):
+                    with mock.patch("toc_bookmarks.writer._create_writer", return_value=fake_writer):
+                        with mock.patch(
+                            "toc_bookmarks.writer.finish_pdf_pages",
+                            return_value=FinishStats(0, 0),
+                        ):
+                            result = write_bookmarks_for_pdf(src.name, output_path=output_path)
+
+        self.assertEqual(result.written_count, 2)
+        self.assertEqual(result.link_annotation_count, 2)
+        self.assertEqual(len(fake_writer.annotations), 2)
+        self.assertEqual(fake_writer.annotations[0]["page_number"], 0)
+        subtype = fake_writer.annotations[0]["annotation"]["/Subtype"]
+        self.assertEqual(str(subtype), "/Link")
+        log_text = output_path.with_suffix(output_path.suffix + ".log.txt").read_text(encoding="utf-8")
+        self.assertIn("TOC link annotations:", log_text)
+        self.assertIn("LINK  | toc_page=0 | dest=2", log_text)
+        self.assertIn("TOC link annotations: 2", log_text)
+
+    def test_skips_uncertain_toc_link_annotations(self) -> None:
+        analysis = AnalysisResult(
+            is_ocr_text_available=True,
+            toc_entries=[
+                TocEntry(
+                    title="Chapter 1 Getting Started",
+                    level=1,
+                    anchor_page_index=2,
+                    anchor_match_score=0.95,
+                    toc_page_index=0,
+                ),
+                TocEntry(
+                    title="Tiny Ghost",
+                    level=2,
+                    anchor_page_index=3,
+                    anchor_match_score=0.91,
+                    toc_page_index=0,
+                    toc_x=72.0,
+                    toc_y=660.0,
+                    toc_width=4.0,
+                    toc_height=12.0,
+                    toc_font_name="/Helvetica",
+                ),
+            ],
+            toc_candidates=[TocCandidate(page_index=0)],
+            bookmark_coverage=BookmarkCoverage([], [], []),
+        )
+        fake_writer = _FakeWriter(page_count=4)
+        fake_writer.pages = list(range(4))
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as src:
+            output_path = pathlib.Path(src.name).with_suffix(".bookmarked.pdf")
+            with mock.patch("toc_bookmarks.writer.analyze_pdf_file", return_value=analysis):
+                with mock.patch("toc_bookmarks.writer._open_pdf_reader", return_value=object()):
+                    with mock.patch("toc_bookmarks.writer._create_writer", return_value=fake_writer):
+                        with mock.patch(
+                            "toc_bookmarks.writer.finish_pdf_pages",
+                            return_value=FinishStats(0, 0),
+                        ):
+                            result = write_bookmarks_for_pdf(src.name, output_path=output_path)
+
+        self.assertEqual(result.written_count, 2)
+        self.assertEqual(result.link_annotation_count, 0)
+        self.assertEqual(fake_writer.annotations, [])
+        log_text = output_path.with_suffix(output_path.suffix + ".log.txt").read_text(encoding="utf-8")
+        self.assertIn("missing or uncertain TOC text rectangle", log_text)
+        self.assertIn("TOC link annotations: 0", log_text)
+
 
 
 if __name__ == "__main__":

@@ -110,13 +110,19 @@ def _extract_page_layout_lines(page: Any) -> List[TocLayoutLine]:
     def visitor(text: Any, _cm: Any, tm: Any, font_dict: Any, font_size: Any) -> None:
         if not isinstance(text, str) or not text.strip():
             return
+        cleaned = text.strip()
+        size = float(font_size) if font_size else 0.0
+        # pypdf does not expose glyph advances here; estimate a conservative span
+        # width from character count so TOC link rectangles stay usable.
+        estimated_width = max(len(cleaned), 1) * max(size, 1.0) * 0.5
         spans.append(
             {
-                "text": text.strip(),
+                "text": cleaned,
                 "x": float(tm[4]),
                 "y": float(tm[5]),
-                "font_size": float(font_size),
+                "font_size": size,
                 "font_name": "" if font_dict is None else str(font_dict.get("/BaseFont", "")),
+                "width": estimated_width,
             }
         )
 
@@ -151,13 +157,20 @@ def _group_spans_into_lines(spans: List[Dict[str, Any]], y_tolerance: float = 2.
         texts = [span["text"] for span in group]
         font_names = [span["font_name"] for span in group if span["font_name"]]
         font_sizes = [span["font_size"] for span in group if span["font_size"]]
+        font_size = max(font_sizes) if font_sizes else 0.0
+        x_min = min(span["x"] for span in group)
+        x_max = max(span["x"] + float(span.get("width") or 0.0) for span in group)
+        width = max(x_max - x_min, font_size if font_size else 1.0)
+        height = font_size if font_size else None
         lines.append(
             TocLayoutLine(
                 text=" ".join(texts),
-                x=min(span["x"] for span in group),
+                x=x_min,
                 y=max(span["y"] for span in group),
-                font_size=max(font_sizes) if font_sizes else 0.0,
+                font_size=font_size,
                 font_name=Counter(font_names).most_common(1)[0][0] if font_names else "",
+                width=width,
+                height=height,
             )
         )
     return lines

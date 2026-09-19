@@ -24,6 +24,9 @@ class TocEntry:
     anchor_match_score: float = 0.0
     toc_page_index: Optional[int] = None
     toc_x: Optional[float] = None
+    toc_y: Optional[float] = None
+    toc_width: Optional[float] = None
+    toc_height: Optional[float] = None
     toc_font_name: str = ""
 
 
@@ -45,6 +48,8 @@ class TocLayoutLine:
     y: float
     font_size: float = 0.0
     font_name: str = ""
+    width: Optional[float] = None
+    height: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -81,3 +86,4 @@ class BookmarkWriteResult:
     skipped_titles: List[str] = field(default_factory=list)
     cropped_page_count: int = 0
     watermarked_page_count: int = 0
+    link_annotation_count: int = 0

@@ -13,6 +13,7 @@ scanned documents are noisy and often contain OCR artifacts.
 """
 
 import re
+from dataclasses import replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .models import AnalysisResult, BookmarkCoverage, TocCandidate, TocEntry, TocLayoutLine
@@ -235,6 +236,9 @@ def extract_toc_entries(
                     level=level,
                     toc_page_index=candidate.page_index,
                     toc_x=None if layout_line is None else layout_line.x,
+                    toc_y=None if layout_line is None else layout_line.y,
+                    toc_width=None if layout_line is None else layout_line.width,
+                    toc_height=None if layout_line is None else layout_line.height,
                     toc_font_name="" if layout_line is None else layout_line.font_name,
                 )
             )
@@ -502,15 +506,10 @@ def match_toc_entries_to_pages(
             minimum_page_index=parent_anchor_floor,
         )
         matched_entries.append(
-            TocEntry(
-                title=entry.title,
-                printed_page=entry.printed_page,
-                level=entry.level,
+            replace(
+                entry,
                 anchor_page_index=anchor_page_index,
                 anchor_match_score=score,
-                toc_page_index=entry.toc_page_index,
-                toc_x=entry.toc_x,
-                toc_font_name=entry.toc_font_name,
             )
         )
         if (
@@ -618,15 +617,10 @@ def _repair_sequence_anchors(
         )
         if inferred is None:
             continue
-        repaired[index] = TocEntry(
-            title=entry.title,
-            printed_page=entry.printed_page,
-            level=entry.level,
+        repaired[index] = replace(
+            entry,
             anchor_page_index=inferred,
             anchor_match_score=0.9,
-            toc_page_index=entry.toc_page_index,
-            toc_x=entry.toc_x,
-            toc_font_name=entry.toc_font_name,
         )
     return repaired
 
@@ -1197,6 +1191,13 @@ def _merge_layout_row_fragments(
         y = max(line.y for line in row_group)
         font_name = next((line.font_name for line in row_group if line.font_name), "")
         font_size = max(line.font_size for line in row_group)
+        right_edges = [
+            line.x + (line.width if line.width is not None else 0.0)
+            for line in row_group
+        ]
+        width = max(right_edges) - x if right_edges else None
+        heights = [line.height for line in row_group if line.height is not None]
+        height = max(heights) if heights else (font_size if font_size else None)
         merged.append(
             TocLayoutLine(
                 text=_normalize_space(" ".join(text_parts)),
@@ -1204,6 +1205,8 @@ def _merge_layout_row_fragments(
                 y=y,
                 font_size=font_size,
                 font_name=font_name,
+                width=width,
+                height=height,
             )
         )
         index = cursor
@@ -1435,16 +1438,7 @@ def _reconcile_toc_layout_levels(entries: Sequence[TocEntry]) -> List[TocEntry]:
             normalized_level = entry.level
             if _looks_like_child_band_entry(entry, current_level2_entry):
                 normalized_level = 3
-            reconciled_entry = TocEntry(
-                title=entry.title,
-                printed_page=entry.printed_page,
-                level=normalized_level,
-                anchor_page_index=entry.anchor_page_index,
-                anchor_match_score=entry.anchor_match_score,
-                toc_page_index=entry.toc_page_index,
-                toc_x=entry.toc_x,
-                toc_font_name=entry.toc_font_name,
-            )
+            reconciled_entry = replace(entry, level=normalized_level)
             if normalized_level == 2:
                 level2_peers.append(reconciled_entry)
                 current_level2_entry = reconciled_entry
@@ -1453,30 +1447,10 @@ def _reconcile_toc_layout_levels(entries: Sequence[TocEntry]) -> List[TocEntry]:
         normalized_level = entry.level
         if _matches_level2_peer(entry, level2_peers):
             normalized_level = 2
-            promoted_entry = TocEntry(
-                title=entry.title,
-                printed_page=entry.printed_page,
-                level=2,
-                anchor_page_index=entry.anchor_page_index,
-                anchor_match_score=entry.anchor_match_score,
-                toc_page_index=entry.toc_page_index,
-                toc_x=entry.toc_x,
-                toc_font_name=entry.toc_font_name,
-            )
+            promoted_entry = replace(entry, level=2)
             level2_peers.append(promoted_entry)
             current_level2_entry = promoted_entry
-        reconciled.append(
-            TocEntry(
-                title=entry.title,
-                printed_page=entry.printed_page,
-                level=normalized_level,
-                anchor_page_index=entry.anchor_page_index,
-                anchor_match_score=entry.anchor_match_score,
-                toc_page_index=entry.toc_page_index,
-                toc_x=entry.toc_x,
-                toc_font_name=entry.toc_font_name,
-            )
-        )
+        reconciled.append(replace(entry, level=normalized_level))
     return reconciled
 
 
@@ -1495,15 +1469,9 @@ def _apply_two_tier_typographic_hierarchy(entries: Sequence[TocEntry]) -> List[T
             continue
         for entry in cluster:
             result.append(
-                TocEntry(
-                    title=entry.title,
-                    printed_page=entry.printed_page,
+                replace(
+                    entry,
                     level=1 if _font_bucket(entry.toc_font_name) == "bold" else 2,
-                    anchor_page_index=entry.anchor_page_index,
-                    anchor_match_score=entry.anchor_match_score,
-                    toc_page_index=entry.toc_page_index,
-                    toc_x=entry.toc_x,
-                    toc_font_name=entry.toc_font_name,
                 )
             )
     return result
