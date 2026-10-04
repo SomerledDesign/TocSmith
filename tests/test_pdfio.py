@@ -118,7 +118,7 @@ class PdfIoTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0)
-        self.assertEqual(completed.stdout.strip(), "TocSmith 1.0 (346)")
+        self.assertEqual(completed.stdout.strip(), "TocSmith 1.0.1 (347)")
 
     def test_pyproject_declares_console_script(self) -> None:
         project_root = pathlib.Path(__file__).resolve().parents[1]
@@ -135,7 +135,7 @@ class PdfIoTests(unittest.TestCase):
         self.assertIn('.TH TOCSMITH 1', man_page)
         self.assertIn('\\-\\-write-bookmarks', man_page)
         self.assertIn('\\-\\-watermark', man_page)
-        self.assertIn('TocSmith 1.0 (346)', man_page)
+        self.assertIn('TocSmith 1.0.1 (347)', man_page)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,10 @@
 Current milestone: Milestone 7 Homebrew distribution complete
 
 Completed work:
+- Released v1.0.1 (build 347): child entries now nest under the nearest
+  accepted shallower outline item when TOC levels skip (e.g. level 1 followed
+  by level 3), fixing flat outlines; added a regression test (62 tests pass).
+  The tag archive now carries `LICENSE`, and the tap formula pins v1.0.1.
 - Published `Formula/tocsmith.rb` in
   `https://github.com/SomerledDesign/homebrew-tap`, enabling the one-line
   command `brew install SomerledDesign/tap/tocsmith`.

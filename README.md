@@ -112,9 +112,9 @@ The evolving design, completed milestones, and known weak spots live in
 
 TocSmith keeps a public release version and a separate cumulative build number:
 
-- Release: **1.0**
-- Build: **346**
-- Display: **TocSmith 1.0 (346)**
+- Release: **1.0.1**
+- Build: **347**
+- Display: **TocSmith 1.0.1 (347)**
 
 The release version communicates compatibility. The build number preserves the
 project's longer experimental lineage. Both values have a single source of
