@@ -188,8 +188,8 @@ Remaining tasks:
 - Tighten the remaining 4DOS middle-section misses, especially `Configuration Directives`, `Color Directives`, `Batch File Variables`, and `Multitasking and Disk Swapping`.
 
 Known constraints:
-- TocSmith does not yet declare an SPDX software license; the third-party
-  Homebrew formula accurately records this as `license :cannot_represent`.
+- TocSmith is licensed GPL-3.0-or-later (`LICENSE`, `pyproject.toml`); the
+  Homebrew formula records `license "GPL-3.0-or-later"`.
 - Anchor matching is heuristic and can overmatch generic titles like `Files`, `Index`, or `Getting Help`.
 - Text-layer extraction/OCR artifacts can still distort titles, such as umlauts or ligatures rendered incorrectly.
 - Full-book analysis runs are becoming expensive enough that large PDFs may need more targeted verification while heuristics are still evolving.
