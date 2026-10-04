@@ -211,6 +211,35 @@ class WriterTests(unittest.TestCase):
             "Documentation and Software",
         )
 
+    def test_children_nest_under_nearest_parent_when_levels_skip(self) -> None:
+        analysis = AnalysisResult(
+            is_ocr_text_available=True,
+            toc_entries=[
+                TocEntry(title="Chapter 1: Getting started", level=1, anchor_page_index=2, anchor_match_score=1.0),
+                TocEntry(title="1.1 Unpacking the kit", level=3, anchor_page_index=3, anchor_match_score=1.0),
+                TocEntry(title="1.2 What you need", level=3, anchor_page_index=4, anchor_match_score=1.0),
+                TocEntry(title="Chapter 2: Assembly", level=1, anchor_page_index=5, anchor_match_score=1.0),
+                TocEntry(title="2.1 Fitting the resistors", level=3, anchor_page_index=6, anchor_match_score=1.0),
+            ],
+            toc_candidates=[TocCandidate(page_index=1)],
+            bookmark_coverage=BookmarkCoverage([], [], []),
+        )
+        fake_writer = _FakeWriter()
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as src:
+            output_path = pathlib.Path(src.name).with_suffix(".bookmarked.pdf")
+            with mock.patch("toc_bookmarks.writer.analyze_pdf_file", return_value=analysis):
+                with mock.patch("toc_bookmarks.writer._open_pdf_reader", return_value=object()):
+                    with mock.patch("toc_bookmarks.writer._create_writer", return_value=fake_writer):
+                        result = write_bookmarks_for_pdf(src.name, output_path=output_path)
+
+        self.assertEqual(result.written_count, 5)
+        parents = {item["title"]: (item["parent"] or {}).get("title") for item in fake_writer.outlines}
+        self.assertIsNone(parents["Chapter 1: Getting started"])
+        self.assertEqual(parents["1.1 Unpacking the kit"], "Chapter 1: Getting started")
+        self.assertEqual(parents["1.2 What you need"], "Chapter 1: Getting started")
+        self.assertIsNone(parents["Chapter 2: Assembly"])
+        self.assertEqual(parents["2.1 Fitting the resistors"], "Chapter 2: Assembly")
+
     def test_main_can_write_bookmarks(self) -> None:
         write_result = mock.Mock(
             output_path="/tmp/out.pdf",
