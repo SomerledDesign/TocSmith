@@ -240,6 +240,7 @@ def extract_toc_entries(
                     toc_width=None if layout_line is None else layout_line.width,
                     toc_height=None if layout_line is None else layout_line.height,
                     toc_font_name="" if layout_line is None else layout_line.font_name,
+                    toc_bbox=None if layout_line is None else layout_line.bbox,
                 )
             )
     deduped = _dedupe_entries(entries)
@@ -1198,6 +1199,15 @@ def _merge_layout_row_fragments(
         width = max(right_edges) - x if right_edges else None
         heights = [line.height for line in row_group if line.height is not None]
         height = max(heights) if heights else (font_size if font_size else None)
+        boxes = [line.bbox for line in row_group]
+        bbox = None
+        if boxes and all(box is not None for box in boxes):
+            bbox = (
+                min(box[0] for box in boxes),
+                min(box[1] for box in boxes),
+                max(box[2] for box in boxes),
+                max(box[3] for box in boxes),
+            )
         merged.append(
             TocLayoutLine(
                 text=_normalize_space(" ".join(text_parts)),
@@ -1207,6 +1217,7 @@ def _merge_layout_row_fragments(
                 font_name=font_name,
                 width=width,
                 height=height,
+                bbox=bbox,
             )
         )
         index = cursor

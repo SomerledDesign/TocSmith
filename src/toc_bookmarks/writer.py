@@ -290,6 +290,13 @@ def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]
                 "linked": False,
                 "reason": f"destination page index {entry.anchor_page_index} out of range",
             }
+        fitted = _fit_rect_to_page(rect, pages[entry.toc_page_index])
+        if fitted is None:
+            return {
+                "linked": False,
+                "reason": "TOC text rectangle falls outside the TOC page",
+            }
+        rect = fitted
     add_annotation = getattr(writer, "add_annotation", None)
     if not callable(add_annotation):
         return {
@@ -312,7 +319,15 @@ def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]
 
 
 def _toc_link_rectangle(entry: TocEntry) -> Optional[Tuple[float, float, float, float]]:
-    """@brief Build a PDF link rectangle over confident TOC entry text bounds."""
+    """@brief Build a PDF link rectangle over confident TOC entry text bounds.
+
+    Prefers the page-space ``toc_bbox`` captured during extraction (text and
+    CTM matrices applied). The raw ``toc_x``/``toc_y`` fallback is only valid
+    when text space equals page space, so it is kept for callers that build
+    entries without a bbox.
+    """
+    if entry.toc_bbox is not None:
+        return _rectangle_from_bbox(entry.title, entry.toc_bbox)
     if (
         entry.toc_x is None
         or entry.toc_y is None
@@ -334,6 +349,55 @@ def _toc_link_rectangle(entry: TocEntry) -> Optional[Tuple[float, float, float, 
     y0 = entry.toc_y - (0.25 * height)
     y1 = entry.toc_y + (0.85 * height)
     if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _rectangle_from_bbox(
+    title: str,
+    bbox: Tuple[float, float, float, float],
+) -> Optional[Tuple[float, float, float, float]]:
+    """@brief Trim a page-space TOC row box to the title text.
+
+    A TOC row often includes dot leaders and the page number; when the row is
+    much wider than the title alone, keep the link over the title.
+    """
+    x0, y0, x1, y1 = bbox
+    height = y1 - y0
+    width = x1 - x0
+    if height < 4.0 or width < 8.0:
+        return None
+    title_estimate = max(len(title), 1) * height * 0.5
+    if width > title_estimate * 1.5:
+        width = min(width, max(title_estimate, height * 3.0))
+    return (x0, y0, x0 + width, y1)
+
+
+def _fit_rect_to_page(
+    rect: Tuple[float, float, float, float],
+    page: Any,
+) -> Optional[Tuple[float, float, float, float]]:
+    """@brief Keep a link rectangle on the visible page, or reject it.
+
+    Text widths are estimated, so a long row (title, leaders and page number)
+    can overshoot the right edge; the right edge is clamped to the page. A
+    rectangle whose left, top or bottom edge is off the page indicates bad
+    geometry and is rejected (``None``).
+    """
+    # The crop box is the visible area (the finisher crops oversized pages);
+    # pypdf defaults it to the media box when absent.
+    box = getattr(page, "cropbox", None) or getattr(page, "mediabox", None)
+    if box is None:
+        return rect
+    try:
+        left, bottom, right, top = (float(value) for value in (box.left, box.bottom, box.right, box.top))
+    except (AttributeError, TypeError, ValueError):
+        return rect
+    x0, y0, x1, y1 = rect
+    if not (left - 1 <= x0 < right and bottom - 1 <= y0 and y1 <= top + 1):
+        return None
+    x1 = min(x1, right)
+    if x1 - x0 < 8.0:
         return None
     return (x0, y0, x1, y1)
 

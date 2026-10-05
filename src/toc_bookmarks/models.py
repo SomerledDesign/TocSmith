@@ -6,7 +6,7 @@ so the heuristic pipeline stays explicit and easy to inspect in tests.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,9 @@ class TocEntry:
     toc_width: Optional[float] = None
     toc_height: Optional[float] = None
     toc_font_name: str = ""
+    # Page-space (default user space) bounding box of the TOC row text as
+    # (x0, y0, x1, y1), used for link annotations. ``None`` when unknown.
+    toc_bbox: Optional[Tuple[float, float, float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,10 @@ class TocLayoutLine:
     font_name: str = ""
     width: Optional[float] = None
     height: Optional[float] = None
+    # Page-space bounding box (x0, y0, x1, y1) after applying the text and
+    # current transformation matrices; ``x``/``y``/``font_size`` stay in raw
+    # text space because the hierarchy heuristics are tuned on those values.
+    bbox: Optional[Tuple[float, float, float, float]] = None
 
 
 @dataclass(frozen=True)

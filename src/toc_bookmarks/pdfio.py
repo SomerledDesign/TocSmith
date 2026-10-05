@@ -10,7 +10,7 @@ heuristics use for TOC and heading matching.
 
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .analyzer import analyze_pdf_features
 from .models import AnalysisResult, TocLayoutLine
@@ -107,7 +107,7 @@ def _extract_page_layout_lines(page: Any) -> List[TocLayoutLine]:
     """@brief Capture text spans from a page and group them into logical lines."""
     spans: List[Dict[str, Any]] = []
 
-    def visitor(text: Any, _cm: Any, tm: Any, font_dict: Any, font_size: Any) -> None:
+    def visitor(text: Any, cm: Any, tm: Any, font_dict: Any, font_size: Any) -> None:
         if not isinstance(text, str) or not text.strip():
             return
         cleaned = text.strip()
@@ -123,11 +123,64 @@ def _extract_page_layout_lines(page: Any) -> List[TocLayoutLine]:
                 "font_size": size,
                 "font_name": "" if font_dict is None else str(font_dict.get("/BaseFont", "")),
                 "width": estimated_width,
+                "bbox": _span_page_bbox(cleaned, size, tm, cm),
             }
         )
 
     page.extract_text(visitor_text=visitor)
     return _group_spans_into_lines(spans)
+
+
+def _span_page_bbox(
+    text: str,
+    font_size: float,
+    tm: Any,
+    cm: Any,
+) -> Optional[Tuple[float, float, float, float]]:
+    """@brief Estimate a span's page-space box from the text and CTM matrices.
+
+    ``tm`` positions text in text space and ``cm`` maps that to default user
+    space (scanned pages often draw everything under a 72/300 scale, and many
+    producers set ``Tf 1`` and carry the real size in ``Tm``). Combining both
+    gives the effective origin and glyph size on the page. Rotated or skewed
+    text returns ``None`` so callers skip it rather than guess.
+    """
+    try:
+        a, b, c, d, e, f = (float(value) for value in tm)
+        ca, cb, cc, cd, ce, cf = (float(value) for value in (cm if cm is not None else (1, 0, 0, 1, 0, 0)))
+    except (TypeError, ValueError):
+        return None
+    pa = a * ca + b * cc
+    pb = a * cb + b * cd
+    pc = c * ca + d * cc
+    pd = c * cb + d * cd
+    pe = e * ca + f * cc + ce
+    pf = e * cb + f * cd + cf
+    if abs(pb) > 1e-3 * max(abs(pa), 1e-9) or abs(pc) > 1e-3 * max(abs(pd), 1e-9):
+        return None
+    size = font_size if font_size else 1.0
+    horizontal = abs(pa) * size
+    vertical = abs(pd) * size
+    if horizontal <= 0 or vertical <= 0:
+        return None
+    width = max(len(text), 1) * horizontal * 0.5
+    x0 = pe if pa > 0 else pe - width
+    return (x0, pf - 0.22 * vertical, x0 + width, pf + 0.78 * vertical)
+
+
+def _union_bboxes(
+    boxes: Iterable[Optional[Tuple[float, float, float, float]]],
+) -> Optional[Tuple[float, float, float, float]]:
+    """@brief Union boxes, or ``None`` if any box is unknown."""
+    boxes = list(boxes)
+    if not boxes or any(box is None for box in boxes):
+        return None
+    return (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
 
 
 def _group_spans_into_lines(spans: List[Dict[str, Any]], y_tolerance: float = 2.5) -> List[TocLayoutLine]:
@@ -171,6 +224,7 @@ def _group_spans_into_lines(spans: List[Dict[str, Any]], y_tolerance: float = 2.
                 font_name=Counter(font_names).most_common(1)[0][0] if font_names else "",
                 width=width,
                 height=height,
+                bbox=_union_bboxes(span.get("bbox") for span in group),
             )
         )
     return lines

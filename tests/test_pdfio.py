@@ -152,6 +152,43 @@ class PdfIoTests(unittest.TestCase):
         self.assertEqual(lines[0].width, 72.0)
         self.assertEqual(lines[0].height, 12.0)
 
+    def test_span_page_bbox_applies_ctm_scale(self) -> None:
+        # Scanned page: text drawn at 300 dpi under a 72/300 CTM.
+        from toc_bookmarks.pdfio import _span_page_bbox
+
+        bbox = _span_page_bbox("Introduction", 33.6, (1, 0, 0, 1, 220.0, 2133.0), (0.24, 0, 0, 0.24, 0, 0))
+        self.assertIsNotNone(bbox)
+        x0, y0, x1, y1 = bbox
+        self.assertAlmostEqual(x0, 52.8, places=1)
+        self.assertAlmostEqual(y1 - y0, 33.6 * 0.24, places=2)
+        self.assertTrue(y0 < 511.92 < y1)
+        self.assertLess(x1, 464.0)
+
+    def test_span_page_bbox_uses_text_matrix_font_scale(self) -> None:
+        # Common producer pattern: Tf 1 with the real size carried in Tm.
+        from toc_bookmarks.pdfio import _span_page_bbox
+
+        bbox = _span_page_bbox("Overview", 1.0, (10.06, 0, 0, 10.06, 156.0, 640.8), (1, 0, 0, 1, 0, 0))
+        self.assertIsNotNone(bbox)
+        self.assertAlmostEqual(bbox[3] - bbox[1], 10.06, places=2)
+        self.assertAlmostEqual(bbox[2] - bbox[0], 8 * 10.06 * 0.5, places=2)
+
+    def test_span_page_bbox_skips_rotated_text(self) -> None:
+        from toc_bookmarks.pdfio import _span_page_bbox
+
+        self.assertIsNone(_span_page_bbox("Sideways", 10.0, (0, 1, -1, 0, 100.0, 100.0), (1, 0, 0, 1, 0, 0)))
+
+    def test_group_spans_into_lines_unions_page_bboxes(self) -> None:
+        from toc_bookmarks.pdfio import _group_spans_into_lines
+
+        lines = _group_spans_into_lines(
+            [
+                {"text": "Intro", "x": 72.0, "y": 700.0, "font_size": 12.0, "font_name": "/Helv", "width": 30.0, "bbox": (18.0, 167.0, 25.0, 170.0)},
+                {"text": "duction", "x": 102.0, "y": 700.0, "font_size": 12.0, "font_name": "/Helv", "width": 42.0, "bbox": (25.0, 166.0, 35.0, 171.0)},
+            ]
+        )
+        self.assertEqual(lines[0].bbox, (18.0, 166.0, 35.0, 171.0))
+
 
 
 if __name__ == "__main__":

@@ -374,6 +374,53 @@ class WriterTests(unittest.TestCase):
         self.assertIn("LINK  | toc_page=0 | dest=2", log_text)
         self.assertIn("TOC link annotations: 2", log_text)
 
+    def test_toc_link_uses_page_space_bbox_and_clamps_to_page(self) -> None:
+        from types import SimpleNamespace
+
+        from toc_bookmarks.writer import _try_add_toc_link_annotation
+
+        page = SimpleNamespace(mediabox=SimpleNamespace(left=0.0, bottom=0.0, right=464.0, top=610.0))
+        fake_writer = _FakeWriter(page_count=12)
+        fake_writer.pages = [page] * 12
+        # Raw text-space fields are deliberately off-page (300 dpi scan); the
+        # page-space bbox must win.
+        entry = TocEntry(
+            title="Introduction",
+            anchor_page_index=10,
+            anchor_match_score=1.0,
+            toc_page_index=4,
+            toc_x=220.0,
+            toc_y=2133.0,
+            toc_width=184.0,
+            toc_height=33.6,
+            toc_bbox=(52.8, 509.9, 101.2, 518.2),
+        )
+        decision = _try_add_toc_link_annotation(fake_writer, entry)
+        self.assertTrue(decision["linked"])
+        self.assertEqual(decision["rect"], (52.8, 509.9, 101.2, 518.2))
+
+        long_row = TocEntry(
+            title="Using Paths to Specify the Location of Files",
+            anchor_page_index=10,
+            anchor_match_score=1.0,
+            toc_page_index=4,
+            toc_bbox=(200.0, 100.0, 520.0, 110.0),
+        )
+        decision = _try_add_toc_link_annotation(fake_writer, long_row)
+        self.assertTrue(decision["linked"])
+        self.assertEqual(decision["rect"][2], 464.0)
+
+        off_page = TocEntry(
+            title="Introduction",
+            anchor_page_index=10,
+            anchor_match_score=1.0,
+            toc_page_index=4,
+            toc_bbox=(52.8, 2128.0, 101.2, 2140.0),
+        )
+        decision = _try_add_toc_link_annotation(fake_writer, off_page)
+        self.assertFalse(decision["linked"])
+        self.assertIn("outside the TOC page", decision["reason"])
+
     def test_skips_uncertain_toc_link_annotations(self) -> None:
         analysis = AnalysisResult(
             is_ocr_text_available=True,
