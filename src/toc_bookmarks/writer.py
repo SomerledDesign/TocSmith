@@ -76,7 +76,7 @@ def write_bookmarks_for_pdf(
             skipped_titles.append(entry.title)
             log_lines.append(_format_log_line(entry, decision))
             continue
-        parent = parent_by_level.get(max(0, entry.level - 1))
+        parent = _nearest_parent(parent_by_level, entry.level)
         outline_item = writer.add_outline_item(
             entry.title,
             entry.anchor_page_index,
@@ -195,6 +195,21 @@ def _is_layout_verified_single_word_entry(
     if entry.level == 1:
         return is_bold
     return not is_bold and entry.level - 1 in accepted_entry_by_level
+
+
+def _nearest_parent(parent_by_level: Dict[int, Any], level: int) -> Any:
+    """@brief Return the deepest accepted outline item shallower than ``level``.
+
+    TOC levels can skip (for example a chapter at level 1 followed directly
+    by level-3 sections when the layout pass assigns an indentation band), so
+    looking only at ``level - 1`` would detach those children to the root and
+    flatten the outline. Walking up to the nearest shallower ancestor keeps the
+    hierarchy intact.
+    """
+    shallower = [key for key in parent_by_level if key < level]
+    if not shallower:
+        return None
+    return parent_by_level[max(shallower)]
 
 
 def _clear_deeper_levels(level_map: Dict[int, Any], level: int) -> None:

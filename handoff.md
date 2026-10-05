@@ -3,14 +3,23 @@
 Current milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
 
 Completed work:
+- Prepared v1.1.0 (build 348): merged main (v1.0.1 outline-nesting fix and
+  LICENSE in the archive) into the Milestone 4 branch. TOC link rectangles are
+  now computed in page space (text matrix x CTM, effective glyph size), fixing
+  off-page rects on scanned PDFs and skipped links where the size lives in the
+  text matrix. Verified on 4DOS, DOS 6.22, LaserJet 6P, Watson and the blinky
+  sample: every link targets its bookmark's page and sits on the TOC page.
 - Implemented Milestone 4 conservative in-page TOC link annotations: when writing
   bookmarked PDFs, place borderless PDF link annotations over confident TOC entry
   text rectangles that jump to resolved destinations; skip missing/uncertain
   geometry and log LINK/SKIP decisions with rectangle details.
 - Extended TocLayoutLine / TocEntry with width/height (and toc_y) captured from
   estimated text-span extents during layout extraction.
-- Advanced the cumulative build identifier to 347 for the TOC link-annotation work.
 - Added writer tests covering confident link placement and uncertain-geometry skips.
+- Released v1.0.1 (build 347): child entries now nest under the nearest
+  accepted shallower outline item when TOC levels skip (e.g. level 1 followed
+  by level 3), fixing flat outlines; added a regression test (62 tests pass).
+  The tag archive now carries `LICENSE`, and the tap formula pins v1.0.1.
 - Published `Formula/tocsmith.rb` in
   `https://github.com/SomerledDesign/homebrew-tap`, enabling the one-line
   command `brew install SomerledDesign/tap/tocsmith`.
@@ -196,8 +205,8 @@ Remaining tasks:
 - Tighten the remaining 4DOS middle-section misses, especially `Configuration Directives`, `Color Directives`, `Batch File Variables`, and `Multitasking and Disk Swapping`.
 
 Known constraints:
-- TocSmith does not yet declare an SPDX software license; the third-party
-  Homebrew formula accurately records this as `license :cannot_represent`.
+- TocSmith is licensed GPL-3.0-or-later (`LICENSE`, `pyproject.toml`); the
+  Homebrew formula records `license "GPL-3.0-or-later"`.
 - Anchor matching is heuristic and can overmatch generic titles like `Files`, `Index`, or `Getting Help`.
 - Text-layer extraction/OCR artifacts can still distort titles, such as umlauts or ligatures rendered incorrectly.
 - Full-book analysis runs are becoming expensive enough that large PDFs may need more targeted verification while heuristics are still evolving.

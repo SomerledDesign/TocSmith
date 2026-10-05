@@ -117,9 +117,9 @@ The evolving design, completed milestones, and known weak spots live in
 
 TocSmith keeps a public release version and a separate cumulative build number:
 
-- Release: **1.0**
-- Build: **347**
-- Display: **TocSmith 1.0 (347)**
+- Release: **1.1.0**
+- Build: **348**
+- Display: **TocSmith 1.1.0 (348)**
 
 The release version communicates compatibility. The build number preserves the
 project's longer experimental lineage. Both values have a single source of
@@ -136,3 +136,14 @@ Run the complete test suite with:
 ```sh
 .venv/bin/python -m unittest discover -s tests
 ```
+
+## License
+
+TocSmith is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It comes with no warranty. See [`LICENSE`](LICENSE) for the full text.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+Copyright © 2026 Somerled Design.

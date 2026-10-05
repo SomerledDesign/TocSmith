@@ -118,7 +118,7 @@ class PdfIoTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0)
-        self.assertEqual(completed.stdout.strip(), "TocSmith 1.0 (347)")
+        self.assertEqual(completed.stdout.strip(), "TocSmith 1.1.0 (348)")
 
     def test_pyproject_declares_console_script(self) -> None:
         project_root = pathlib.Path(__file__).resolve().parents[1]
@@ -135,7 +135,7 @@ class PdfIoTests(unittest.TestCase):
         self.assertIn('.TH TOCSMITH 1', man_page)
         self.assertIn('\\-\\-write-bookmarks', man_page)
         self.assertIn('\\-\\-watermark', man_page)
-        self.assertIn('TocSmith 1.0 (347)', man_page)
+        self.assertIn('TocSmith 1.1.0 (348)', man_page)
 
     def test_group_spans_into_lines_estimates_width_and_height(self) -> None:
         from toc_bookmarks.pdfio import _group_spans_into_lines
