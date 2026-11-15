@@ -14,15 +14,33 @@ scanned documents are noisy and often contain OCR artifacts.
 
 import re
 from dataclasses import replace
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 from .models import AnalysisResult, BookmarkCoverage, TocCandidate, TocEntry, TocLayoutLine
 
 _DOT_LEADER_PATTERN = re.compile(r"\.{2,}")
 _SPACED_DOT_LEADER_PATTERN = re.compile(r"(?:\s*\.\s*){2,}")
 _INLINE_SYMBOL_PATTERN = re.compile(r"\s+['\"`~_•·,]+\s*")
+# Chapter-page labels (``7-4``, ``A-1``, ``Index-1``) use a hyphen or dash.
+# They are matched before a bare number so the dash is not left on the title.
+_DASH_CLASS = r"[\u2010\u2011\u2012\u2013\u2014\u2015\-]"
+_CHAPTER_PAGE_TOKEN = rf"(?:[A-Za-z]+|\d{{1,4}}){_DASH_CLASS}\d{{1,4}}"
+_PAGE_TOKEN = rf"(?:{_CHAPTER_PAGE_TOKEN}|\d{{1,4}}|[ivxlcdmIVXLCDM]+)"
 _TOC_LINE_PATTERN = re.compile(
-    r"^\s*(?P<title>.+?)\s*(?:\.{2,}|\s{2,}|\t)\s*(?:['\"`,;:]+\s*)?(?P<page>\d{1,4}|[ivxlcdmIVXLCDM]+)\s*$"
+    r"^\s*(?P<title>.+?)\s*(?:\.{2,}|\s{2,}|\t)\s*(?:['\"`,;:]+\s*)?(?P<page>"
+    + _PAGE_TOKEN
+    + r")\s*$"
+)
+_STANDALONE_PAGE_LABEL_PATTERN = re.compile(
+    rf"^(?:{_CHAPTER_PAGE_TOKEN}|\d{{1,4}}|[ivxlcdm]+)$",
+    re.IGNORECASE,
+)
+_CHAPTER_LABEL_ONLY_PATTERN = re.compile(
+    r"^(?:chapter|appendix)\s+[A-Za-z0-9]+\s*:?\s*$",
+    re.IGNORECASE,
+)
+_FOOTER_LABEL_PATTERN = re.compile(
+    rf"(?i)(?<![A-Za-z0-9])(?:{_CHAPTER_PAGE_TOKEN}|[ivxlcdm]{{1,7}})(?![A-Za-z0-9])"
 )
 _WORD_PATTERN = re.compile(r"[a-z0-9]+")
 _HEADING_PREFIX_PATTERN = re.compile(
@@ -51,11 +69,31 @@ _MOVE_PREFIX_PATTERN = re.compile(
 )
 
 
+class _TocRow(NamedTuple):
+    """@brief One contents row before it becomes a ``TocEntry``.
+
+    ``printed_label`` keeps chapter-page text such as ``7-4`` that has no
+    single integer. ``resolved_page_index`` is the PDF page that label maps
+    to when a footer or ``/PageLabels`` entry says so.
+    """
+
+    raw_line: str
+    title: str
+    printed_page: Optional[int]
+    layout_line: Optional[TocLayoutLine]
+    printed_label: Optional[str] = None
+    resolved_page_index: Optional[int] = None
+    # Set when column geometry already decided the outline level. ``None``
+    # leaves level inference to indentation and wording.
+    level_hint: Optional[int] = None
+
+
 def analyze_pdf_features(
     page_texts: Sequence[str],
     bookmark_titles: Sequence[str],
     toc_page_layouts: Optional[Dict[int, Sequence[TocLayoutLine]]] = None,
     page_layouts: Optional[Dict[int, Sequence[TocLayoutLine]]] = None,
+    explicit_page_labels: Optional[Sequence[Optional[str]]] = None,
 ) -> AnalysisResult:
     """@brief Run the full text- and layout-based PDF analysis pipeline.
 
@@ -63,11 +101,18 @@ def analyze_pdf_features(
     @param bookmark_titles Existing outline titles already present in the PDF.
     @param toc_page_layouts Optional layout metadata for TOC pages.
     @param page_layouts Optional layout metadata for all pages.
+    @param explicit_page_labels Optional per-page labels from a ``/PageLabels``
+        tree. When present they override footer text for the same label.
     @return Aggregate analysis result used by the CLI and bookmark writer.
     """
     toc_candidates = detect_toc_pages(page_texts, toc_page_layouts=toc_page_layouts)
     toc_entries = match_toc_entries_to_pages(
-        extract_toc_entries(page_texts, toc_candidates, toc_page_layouts=toc_page_layouts),
+        extract_toc_entries(
+            page_texts,
+            toc_candidates,
+            toc_page_layouts=toc_page_layouts,
+            explicit_page_labels=explicit_page_labels,
+        ),
         page_texts,
         excluded_page_indexes={candidate.page_index for candidate in toc_candidates},
         page_layouts=page_layouts,
@@ -182,6 +227,7 @@ def extract_toc_entries(
     page_texts: Sequence[str],
     toc_candidates: Sequence[TocCandidate],
     toc_page_layouts: Optional[Dict[int, Sequence[TocLayoutLine]]] = None,
+    explicit_page_labels: Optional[Sequence[Optional[str]]] = None,
 ) -> List[TocEntry]:
     """@brief Extract normalized TOC entries from the detected TOC pages.
 
@@ -192,38 +238,49 @@ def extract_toc_entries(
     @param page_texts Extracted text for each page.
     @param toc_candidates Pages previously classified as TOC pages.
     @param toc_page_layouts Optional layout metadata for TOC pages.
+    @param explicit_page_labels Optional ``/PageLabels`` values aligned with
+        ``page_texts``.
     @return Deduplicated TOC entries with inferred hierarchy.
     """
     entries: List[TocEntry] = []
     structural_context_level = 1
     active_level2_page: Optional[int] = None
     layout_bands = _build_layout_bands(toc_page_layouts or {})
+    label_map = _printed_label_map(page_texts, explicit_page_labels)
     for candidate in toc_candidates:
         page_text = page_texts[candidate.page_index]
         page_layouts = list((toc_page_layouts or {}).get(candidate.page_index, []))
-        page_entries = _extract_toc_rows_from_text(page_text, page_layouts)
-        layout_entries: List[Tuple[str, str, Optional[int], Optional[TocLayoutLine]]] = []
+        page_entries = _extract_toc_rows_from_text(page_text, page_layouts, label_map)
+        layout_entries: List[_TocRow] = []
         if page_layouts:
             layout_entries = _extract_toc_rows_from_layout(
                 page_text,
                 page_layouts,
                 len(page_texts),
+                label_map,
             )
         if layout_entries and (
             not page_entries
             or len(layout_entries) >= max(4, len(page_entries) * 2)
         ):
             page_entries = layout_entries
-        for raw_line, title, printed_page, layout_line in page_entries:
-            level = _infer_level(
-                raw_line,
-                title,
-                printed_page,
-                structural_context_level,
-                active_level2_page,
-                layout_line=layout_line,
-                layout_bands=layout_bands,
-            )
+        for row in page_entries:
+            raw_line = row.raw_line
+            title = row.title
+            printed_page = row.printed_page
+            layout_line = row.layout_line
+            if row.level_hint:
+                level = row.level_hint
+            else:
+                level = _infer_level(
+                    raw_line,
+                    title,
+                    printed_page,
+                    structural_context_level,
+                    active_level2_page,
+                    layout_line=layout_line,
+                    layout_bands=layout_bands,
+                )
             if _STRUCTURAL_PREFIX_PATTERN.match(title):
                 structural_context_level = 2
                 active_level2_page = None
@@ -241,6 +298,8 @@ def extract_toc_entries(
                     toc_height=None if layout_line is None else layout_line.height,
                     toc_font_name="" if layout_line is None else layout_line.font_name,
                     toc_bbox=None if layout_line is None else layout_line.bbox,
+                    printed_label=row.printed_label,
+                    resolved_page_index=row.resolved_page_index,
                 )
             )
     deduped = _dedupe_entries(entries)
@@ -251,9 +310,10 @@ def extract_toc_entries(
 def _extract_toc_rows_from_text(
     page_text: str,
     page_layouts: Sequence[TocLayoutLine],
-) -> List[Tuple[str, str, Optional[int], Optional[TocLayoutLine]]]:
+    label_map: Optional[Dict[str, int]] = None,
+) -> List[_TocRow]:
     """@brief Parse TOC rows directly from extracted text lines."""
-    rows: List[Tuple[str, str, Optional[int], Optional[TocLayoutLine]]] = []
+    rows: List[_TocRow] = []
     for raw_line in page_text.splitlines():
         line = _normalize_toc_line(raw_line.strip())
         match = _TOC_LINE_PATTERN.match(line)
@@ -262,12 +322,19 @@ def _extract_toc_rows_from_text(
         title = _clean_title(match.group("title"))
         if not title:
             continue
+        label = _normalize_page_label(match.group("page"))
+        number = _parse_page_number(match.group("page"))
+        if _is_chapter_page_label(match.group("page")):
+            number = None
+        resolved = None if not label or label_map is None else label_map.get(label)
         rows.append(
-            (
+            _TocRow(
                 raw_line,
                 title,
-                _parse_page_number(match.group("page")),
+                number,
                 _match_layout_line(line, title, page_layouts),
+                label or None,
+                resolved,
             )
         )
     return rows
@@ -277,13 +344,17 @@ def _extract_toc_rows_from_layout(
     page_text: str,
     page_layouts: Sequence[TocLayoutLine],
     max_page_number: int,
-) -> List[Tuple[str, str, Optional[int], Optional[TocLayoutLine]]]:
+    label_map: Optional[Dict[str, int]] = None,
+) -> List[_TocRow]:
     """@brief Reconstruct TOC rows from layout lines when raw text is unreliable.
 
-    This pass merges fragmented layout spans, keeps title-like rows, and pairs
-    them with sequential page numbers gathered from either layout or text.
+    A contents page whose page numbers sit in their own column is paired by
+    vertical overlap. Other pages keep the older sequential number recovery.
     """
     merged_lines = _merge_layout_row_fragments(page_layouts)
+    column_rows = _rows_from_page_number_column(merged_lines, label_map or {})
+    if column_rows is not None:
+        return column_rows
     title_lines = _layout_toc_title_lines(page_text, merged_lines)
     if not title_lines:
         return []
@@ -301,22 +372,23 @@ def _extract_toc_rows_from_layout(
         if len(layout_page_numbers) >= len(text_page_numbers)
         else text_page_numbers
     )
-    rows: List[Tuple[str, str, Optional[int], Optional[TocLayoutLine]]] = []
+    rows: List[_TocRow] = []
     page_index = 0
     for layout_line in title_lines:
         raw_line = layout_line.text
-        title_text, embedded_page = _split_trailing_page_number(raw_line)
+        title_text, label, embedded_page = _split_page_suffix(raw_line)
         title = _clean_title(title_text)
         if not title:
             continue
         printed_page = embedded_page
-        if printed_page is None and page_index < len(page_numbers):
+        resolved = None if not label or label_map is None else label_map.get(label)
+        if printed_page is None and resolved is None and page_index < len(page_numbers):
             printed_page = page_numbers[page_index]
-        if printed_page is None:
+        if printed_page is None and resolved is None:
             continue
         if page_index < len(page_numbers) and page_numbers[page_index] == printed_page:
             page_index += 1
-        rows.append((raw_line, title, printed_page, layout_line))
+        rows.append(_TocRow(raw_line, title, printed_page, layout_line, label, resolved))
     return rows
 
 
@@ -418,6 +490,7 @@ def _parse_page_number(value: str) -> Optional[int]:
 def _clean_title(title: str) -> str:
     """@brief Remove TOC noise and reduce a raw title to readable heading text."""
     title = _normalize_space(title)
+    title = _SPACED_DOT_LEADER_PATTERN.sub(" ", title)
     title = _DOT_LEADER_PATTERN.sub(" ", title)
     title = _INLINE_SYMBOL_PATTERN.sub(" ", title)
     title = _APOSTROPHE_S_PATTERN.sub(r"\1's", title)
@@ -450,7 +523,16 @@ def _dedupe_entries(entries: Iterable[TocEntry]) -> List[TocEntry]:
             and entry.toc_page_index > previous_toc_page + 1
         ):
             cluster_id += 1
-        key = (cluster_id, _normalize_title(entry.title), entry.printed_page)
+        # Position is part of the key so two rows that share a title (a chapter
+        # label and the section of the same name) both survive.
+        key = (
+            cluster_id,
+            _normalize_title(entry.title),
+            entry.printed_page,
+            entry.printed_label,
+            None if entry.toc_y is None else round(entry.toc_y, 1),
+            None if entry.toc_x is None else round(entry.toc_x, 1),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -498,14 +580,22 @@ def match_toc_entries_to_pages(
             ),
             default=0,
         )
-        anchor_page_index, score = _find_anchor_page(
-            entry,
-            page_texts,
-            excluded,
-            page_layouts,
-            anchor_offset=anchor_offset,
-            minimum_page_index=parent_anchor_floor,
-        )
+        # A printed label that already mapped to a real page is not a guess.
+        # Heading search stays the path for ordinary arabic and roman numbers.
+        if (
+            isinstance(entry.resolved_page_index, int)
+            and 0 <= entry.resolved_page_index < len(page_texts)
+        ):
+            anchor_page_index, score = entry.resolved_page_index, 1.0
+        else:
+            anchor_page_index, score = _find_anchor_page(
+                entry,
+                page_texts,
+                excluded,
+                page_layouts,
+                anchor_offset=anchor_offset,
+                minimum_page_index=parent_anchor_floor,
+            )
         matched_entries.append(
             replace(
                 entry,
@@ -1174,54 +1264,109 @@ def _match_layout_line(
 def _merge_layout_row_fragments(
     page_layouts: Sequence[TocLayoutLine],
 ) -> List[TocLayoutLine]:
-    """@brief Merge same-row layout fragments into fuller line records."""
+    """@brief Merge same-row fragments that belong to the same column.
+
+    A contents row is often three columns that share a baseline: a chapter
+    label, a section title with dot leaders, and a page number. Joining every
+    fragment on that baseline fuses those columns into one title. Fragments
+    join only when the gap is a word space, a dot leader, or another piece of
+    the same page-number token.
+    """
     if not page_layouts:
         return []
+    ordered = sorted(page_layouts, key=lambda line: (-line.y, line.x))
+    rows: List[List[TocLayoutLine]] = []
+    for line in ordered:
+        if not rows or abs(rows[-1][0].y - line.y) > 6.0:
+            rows.append([line])
+        else:
+            rows[-1].append(line)
     merged: List[TocLayoutLine] = []
-    lines = sorted(page_layouts, key=lambda line: (-line.y, line.x))
-    index = 0
-    while index < len(lines):
-        row_group = [lines[index]]
-        cursor = index + 1
-        while cursor < len(lines) and abs(lines[index].y - lines[cursor].y) <= 6:
-            row_group.append(lines[cursor])
-            cursor += 1
-        row_group.sort(key=lambda line: line.x)
-        text_parts = [line.text for line in row_group]
-        x = min(line.x for line in row_group)
-        y = max(line.y for line in row_group)
-        font_name = next((line.font_name for line in row_group if line.font_name), "")
-        font_size = max(line.font_size for line in row_group)
-        right_edges = [
-            line.x + (line.width if line.width is not None else 0.0)
-            for line in row_group
-        ]
-        width = max(right_edges) - x if right_edges else None
-        heights = [line.height for line in row_group if line.height is not None]
-        height = max(heights) if heights else (font_size if font_size else None)
-        boxes = [line.bbox for line in row_group]
-        bbox = None
-        if boxes and all(box is not None for box in boxes):
-            bbox = (
-                min(box[0] for box in boxes),
-                min(box[1] for box in boxes),
-                max(box[2] for box in boxes),
-                max(box[3] for box in boxes),
-            )
-        merged.append(
-            TocLayoutLine(
-                text=_normalize_space(" ".join(text_parts)),
-                x=x,
-                y=y,
-                font_size=font_size,
-                font_name=font_name,
-                width=width,
-                height=height,
-                bbox=bbox,
-            )
-        )
-        index = cursor
+    for row in rows:
+        row.sort(key=lambda line: line.x)
+        for cluster in _split_row_into_columns(row):
+            merged.append(_combine_layout_lines(cluster))
     return merged
+
+
+def _split_row_into_columns(row: Sequence[TocLayoutLine]) -> List[List[TocLayoutLine]]:
+    """@brief Split one baseline into column clusters, left to right."""
+    if not row:
+        return []
+    clusters: List[List[TocLayoutLine]] = [[row[0]]]
+    for line in row[1:]:
+        if _line_joins_column(clusters[-1], line):
+            clusters[-1].append(line)
+        else:
+            clusters.append([line])
+    return clusters
+
+
+def _line_joins_column(cluster: Sequence[TocLayoutLine], line: TocLayoutLine) -> bool:
+    """@brief Decide whether ``line`` continues the current column cluster."""
+    text = _normalize_space(line.text)
+    previous_text = _normalize_space(cluster[-1].text)
+    if _is_standalone_page_label(text):
+        return all(_is_standalone_page_label(_normalize_space(item.text)) for item in cluster)
+    if _is_dot_leader_text(text):
+        return not _is_standalone_page_label(previous_text)
+    if _is_standalone_page_label(previous_text):
+        return False
+    previous = cluster[-1]
+    size = max(line.font_size or 0.0, previous.font_size or 0.0, 8.0)
+    # Estimated widths run long and can reach the next column. A large gap
+    # between left edges is a column break even when those widths overlap.
+    column_limit = max(size * 4.0, 28.0)
+    if previous.page_width:
+        column_limit = max(column_limit, previous.page_width * 0.08)
+    if line.x - previous.x > column_limit:
+        return False
+    gap_limit = max(size * 1.5, 10.0)
+    previous_right = previous.x + (previous.width if previous.width is not None else 0.0)
+    return line.x - previous_right <= gap_limit
+
+
+def _combine_layout_lines(
+    row_group: Sequence[TocLayoutLine],
+    text: Optional[str] = None,
+    y: Optional[float] = None,
+) -> TocLayoutLine:
+    """@brief Collapse one column cluster into a single layout line."""
+    text_parts = [line.text for line in row_group]
+    x = min(line.x for line in row_group)
+    combined_y = max(line.y for line in row_group) if y is None else y
+    font_name = next((line.font_name for line in row_group if line.font_name), "")
+    font_size = max(line.font_size for line in row_group)
+    right_edges = [
+        line.x + (line.width if line.width is not None else 0.0)
+        for line in row_group
+    ]
+    width = max(right_edges) - x if right_edges else None
+    heights = [line.height for line in row_group if line.height is not None]
+    height = max(heights) if heights else (font_size if font_size else None)
+    boxes = [line.bbox for line in row_group]
+    bbox = None
+    if boxes and all(box is not None for box in boxes):
+        bbox = (
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        )
+    page_width = next((line.page_width for line in row_group if line.page_width), None)
+    page_height = next((line.page_height for line in row_group if line.page_height), None)
+    return TocLayoutLine(
+        text=_normalize_space(text if text is not None else " ".join(text_parts)),
+        x=x,
+        y=combined_y,
+        font_size=font_size,
+        font_name=font_name,
+        width=width,
+        height=height,
+        bbox=bbox,
+        page_width=page_width,
+        page_height=page_height,
+    )
 
 
 def _looks_like_layout_toc_page(
@@ -1247,7 +1392,14 @@ def _looks_like_layout_toc_continuation_page(
     page_text: str,
     page_layouts: Sequence[TocLayoutLine],
 ) -> bool:
-    """@brief Decide whether a page continues a layout-derived TOC cluster."""
+    """@brief Decide whether a page continues a layout-derived TOC cluster.
+
+    A continuation often has no "Contents" header. A column of page numbers
+    (``8-1``, ``A-1``, ``Index-1``) is enough; embedded numbers in the title
+    text remain the signal for single-column contents pages.
+    """
+    if len(_page_number_column(page_layouts)) >= 4:
+        return True
     title_lines = _layout_toc_title_lines(page_text, page_layouts)
     if len(title_lines) < 4:
         return False
@@ -1279,13 +1431,11 @@ def _layout_toc_title_lines(
             continue
         if re.fullmatch(r"\d+\s+[A-Z][A-Z ]{8,}", text):
             continue
-        if "reference manual" in normalized or normalized == "1991 jp software inc":
-            continue
         if re.fullmatch(r"[0-9\"'` .©*^]+", text):
             continue
-        if line.x > 1000:
+        if _is_standalone_page_label(text) or _is_dot_leader_text(text):
             continue
-        if line.y < 120:
+        if _is_bottom_running_line(line, page_layouts):
             continue
         if normalized.startswith("chapter ") or normalized.startswith("appendix "):
             titles.append(line)
@@ -1363,7 +1513,7 @@ def _extract_layout_page_numbers(
         if (text := _normalize_space(line.text)).isdigit()
         and int(text) > 0
         and (max_page_number is None or int(text) <= max_page_number)
-        and line.x > 1200
+        and _is_right_edge_line(line, page_layouts)
     ]
     if len(right_edge_values) >= 3:
         return [value for _y, value in sorted(right_edge_values, key=lambda item: -item[0])]
@@ -1385,10 +1535,337 @@ def _extract_layout_page_numbers(
 
 def _split_trailing_page_number(text: str) -> Tuple[str, Optional[int]]:
     """@brief Split a trailing page number away from a TOC title line."""
-    match = re.match(r"^(?P<title>.+?)\s+(?P<page>\d{1,4}|[ivxlcdmIVXLCDM]+)\s*$", text)
+    title, _label, number = _split_page_suffix(text)
+    return title, number
+
+
+def _split_page_suffix(text: str) -> Tuple[str, Optional[str], Optional[int]]:
+    """@brief Split a trailing page label from a TOC title.
+
+    @return Title text, normalized label (``7-4``, ``iv``), and the integer
+        value when the label is arabic or roman. Chapter-page labels have no
+        integer value.
+    """
+    match = re.match(rf"^(?P<title>.+?)\s+(?P<page>{_PAGE_TOKEN})\s*$", text)
     if not match:
-        return text, None
-    return match.group("title"), _parse_page_number(match.group("page"))
+        return text, None, None
+    token = match.group("page")
+    label = _normalize_page_label(token)
+    number = None if _is_chapter_page_label(token) else _parse_page_number(token)
+    return match.group("title"), label or None, number
+
+
+def _is_chapter_page_label(value: str) -> bool:
+    """@brief Report whether a token is a chapter-page label such as ``7-4``."""
+    return bool(re.fullmatch(_CHAPTER_PAGE_TOKEN, value.strip(), re.IGNORECASE))
+
+
+def _is_standalone_page_label(text: str) -> bool:
+    """@brief Report whether a line is only a page label, not a title."""
+    return bool(_STANDALONE_PAGE_LABEL_PATTERN.match(_normalize_space(text)))
+
+
+def _is_dot_leader_text(text: str) -> bool:
+    """@brief Report whether a fragment is a run of dot leaders."""
+    stripped = text.strip()
+    if len(stripped) < 2:
+        return False
+    dots = stripped.count(".") + stripped.count("·") + stripped.count("•")
+    return dots >= 2 and all(char in ".·• " for char in stripped)
+
+
+def _normalize_page_label(value: str) -> str:
+    """@brief Fold dashes and case so ``7–4`` and ``7-4`` share a map key."""
+    value = value.strip().lower()
+    value = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2015\-]+", "-", value)
+    return re.sub(r"\s+", "", value)
+
+
+def _printed_label_map(
+    page_texts: Sequence[str],
+    explicit_page_labels: Optional[Sequence[Optional[str]]] = None,
+) -> Dict[str, int]:
+    """@brief Map a printed page label to the PDF page index it names.
+
+    Footers supply the map when the file has no ``/PageLabels`` tree. An
+    explicit label list, one entry per page, overwrites footer hits so a
+    catalog number tree wins when both exist.
+    """
+    mapping: Dict[str, int] = {}
+    for index, text in enumerate(page_texts):
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        for line in lines[-2:]:
+            label = _footer_label(line)
+            if label and label not in mapping:
+                mapping[label] = index
+                break
+    if explicit_page_labels:
+        for index, label in enumerate(explicit_page_labels):
+            if not label:
+                continue
+            normalized = _normalize_page_label(str(label))
+            if normalized:
+                mapping[normalized] = index
+    return mapping
+
+
+def _footer_label(line: str) -> Optional[str]:
+    """@brief Pull a page label off a short running footer, if it has one.
+
+    Dot-leader contents rows are ignored so a TOC line is not treated as the
+    page's own number. A bare arabic number is accepted only when the line is
+    that number alone; chapter-page and roman labels may sit beside a running
+    title (``Getting Started 1-2``, ``Contents iii``).
+    """
+    if len(line) > 80:
+        return None
+    if _DOT_LEADER_PATTERN.search(line) or _SPACED_DOT_LEADER_PATTERN.search(line):
+        return None
+    if _looks_like_toc_line(line):
+        return None
+    matches = list(_FOOTER_LABEL_PATTERN.finditer(line))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    at_start = not line[: match.start()].strip()
+    at_end = not line[match.end() :].strip()
+    if not at_start and not at_end:
+        return None
+    label = _normalize_page_label(match.group(0))
+    if not label:
+        return None
+    if label.isdigit() and _normalize_space(line).lower() != label:
+        return None
+    # A lone "i" is usually the pronoun, not roman 1. "v" is a real footer.
+    if label == "i" and _normalize_space(line).lower() != "i":
+        return None
+    return label
+
+
+def _page_height_of(lines: Sequence[TocLayoutLine]) -> float:
+    """@brief Page height from the media box, or the top of the measured text."""
+    explicit = [line.page_height for line in lines if line.page_height]
+    if explicit:
+        return max(explicit)
+    ys = [line.y for line in lines]
+    return max(ys) if ys else 0.0
+
+
+def _is_bottom_running_line(line: TocLayoutLine, lines: Sequence[TocLayoutLine]) -> bool:
+    """@brief Report whether a line sits in the footer band of its page.
+
+    The band is a fraction of the page height, so the same rule fits a letter
+    page and a scan whose text space is thousands of units tall.
+    """
+    height = _page_height_of(lines)
+    if height <= 0:
+        return False
+    return line.y < height * 0.08
+
+
+def _is_right_edge_line(line: TocLayoutLine, lines: Sequence[TocLayoutLine]) -> bool:
+    """@brief Report whether a line sits in the right-hand portion of the page."""
+    if line.page_width and line.page_width > 0 and line.x > line.page_width * 0.72:
+        return True
+    xs = [item.x for item in lines]
+    if len(xs) < 2:
+        return False
+    low, high = min(xs), max(xs)
+    span = high - low
+    if span <= 40:
+        return False
+    return line.x >= low + span * 0.72
+
+
+def _column_gap(lines: Sequence[TocLayoutLine]) -> float:
+    """@brief Horizontal gap that separates contents columns on this page."""
+    widths = [line.page_width for line in lines if line.page_width]
+    fonts = [line.font_size for line in lines if line.font_size]
+    font = max(fonts) if fonts else 10.0
+    if widths:
+        return max(font * 2.0, max(widths) * 0.08)
+    return max(font * 2.0, 24.0)
+
+
+def _cluster_lines_by_x(
+    lines: Sequence[TocLayoutLine], gap: float
+) -> List[List[TocLayoutLine]]:
+    """@brief Group lines whose left edges fall in the same column."""
+    ordered = sorted(lines, key=lambda line: line.x)
+    columns: List[List[TocLayoutLine]] = []
+    for line in ordered:
+        if not columns or line.x - columns[-1][0].x > gap:
+            columns.append([line])
+        else:
+            columns[-1].append(line)
+    return columns
+
+
+def _page_number_column(page_layouts: Sequence[TocLayoutLine]) -> List[TocLayoutLine]:
+    """@brief Return the right-hand column of standalone page labels, if any."""
+    merged = page_layouts
+    if merged and any(line.width is None for line in merged):
+        merged = _merge_layout_row_fragments(page_layouts)
+    labels = [line for line in merged if _is_standalone_page_label(line.text)]
+    if len(labels) < 4:
+        return []
+    clusters = _cluster_lines_by_x(labels, max(8.0, _column_gap(merged) * 0.4))
+    best = max(clusters, key=len)
+    if len(best) < 4:
+        return []
+    others = [
+        line
+        for line in merged
+        if line not in best and not _is_dot_leader_text(line.text) and not _is_standalone_page_label(line.text)
+    ]
+    if others and _median([line.x for line in best]) <= _median([line.x for line in others]):
+        return []
+    return best
+
+
+def _rows_from_page_number_column(
+    merged_lines: Sequence[TocLayoutLine],
+    label_map: Dict[str, int],
+) -> Optional[List[_TocRow]]:
+    """@brief Pair title columns with a separate page-number column.
+
+    @return Rows in top-to-bottom order, or ``None`` when this page is not a
+        multi-column contents page. Callers then use sequential number recovery.
+    """
+    numbers = _page_number_column(merged_lines)
+    if len(numbers) < 4:
+        return None
+    number_ids = {id(line) for line in numbers}
+    titles: List[TocLayoutLine] = []
+    for line in merged_lines:
+        if id(line) in number_ids:
+            continue
+        text = _normalize_space(line.text)
+        if _is_dot_leader_text(text) or _is_standalone_page_label(text):
+            continue
+        if _is_bottom_running_line(line, merged_lines):
+            continue
+        normalized = _normalize_title(text)
+        if not normalized or normalized in {"contents", "table of contents"}:
+            continue
+        if re.fullmatch(r"(?:contents|table of contents)\s+\d+", normalized or ""):
+            continue
+        titles.append(line)
+    if len(titles) < 4:
+        return None
+    number_x = _median([line.x for line in numbers])
+    gap = _column_gap(merged_lines)
+    title_columns = _cluster_lines_by_x(
+        [line for line in titles if line.x < number_x - gap * 0.25],
+        gap,
+    )
+    if not title_columns:
+        return None
+    built: List[_TocRow] = []
+    if len(title_columns) >= 2:
+        chapters = _merge_chapter_label_pairs(title_columns[0])
+        sections = [line for column in title_columns[1:] for line in column]
+        for line in chapters:
+            row = _row_from_labeled_line(line, numbers, label_map, level=1)
+            if row is not None:
+                built.append(row)
+        for line in sections:
+            row = _row_from_labeled_line(line, numbers, label_map, level=2)
+            if row is not None:
+                built.append(row)
+    else:
+        for line in title_columns[0]:
+            level = 1 if _CHAPTER_LABEL_ONLY_PATTERN.match(_normalize_space(line.text)) or _normalize_title(line.text) in {
+                "introduction",
+                "index",
+                "contents",
+            } else 2
+            row = _row_from_labeled_line(line, numbers, label_map, level=level)
+            if row is not None:
+                built.append(row)
+    if len(built) < 4:
+        return None
+    built.sort(
+        key=lambda row: (
+            -(row.layout_line.y if row.layout_line is not None else 0.0),
+            row.layout_line.x if row.layout_line is not None else 0.0,
+        )
+    )
+    return built
+
+
+def _merge_chapter_label_pairs(lines: Sequence[TocLayoutLine]) -> List[TocLayoutLine]:
+    """@brief Join ``Chapter 1:`` with the title printed on the next line.
+
+    The page number lines up with the label, not the subtitle, so the combined
+    row keeps the label's vertical position.
+    """
+    ordered = sorted(lines, key=lambda line: -line.y)
+    merged: List[TocLayoutLine] = []
+    index = 0
+    while index < len(ordered):
+        line = ordered[index]
+        label = _normalize_space(line.text)
+        if index + 1 < len(ordered) and _CHAPTER_LABEL_ONLY_PATTERN.match(label):
+            nxt = ordered[index + 1]
+            size = max(line.font_size or 0.0, nxt.font_size or 0.0, 8.0)
+            gap = line.y - nxt.y
+            if (
+                gap >= 0
+                and gap <= size * 2.4
+                and not _CHAPTER_LABEL_ONLY_PATTERN.match(_normalize_space(nxt.text))
+            ):
+                joined = label if label.endswith(":") else label + ":"
+                merged.append(
+                    _combine_layout_lines(
+                        [line, nxt],
+                        text=f"{joined} {_normalize_space(nxt.text)}",
+                        y=line.y,
+                    )
+                )
+                index += 2
+                continue
+        merged.append(line)
+        index += 1
+    return merged
+
+
+def _row_from_labeled_line(
+    line: TocLayoutLine,
+    numbers: Sequence[TocLayoutLine],
+    label_map: Dict[str, int],
+    level: int,
+) -> Optional[_TocRow]:
+    """@brief Build a contents row by overlapping a title with a page number."""
+    label_line = _nearest_page_label(line.y, numbers)
+    if label_line is None:
+        return None
+    label = _normalize_page_label(label_line.text)
+    if not label:
+        return None
+    title = _clean_title(line.text)
+    if not title:
+        return None
+    resolved = label_map.get(label)
+    number = None if _is_chapter_page_label(label_line.text) else _parse_page_number(label_line.text)
+    raw = title if level <= 1 else f"   {title}"
+    return _TocRow(raw, title, number, line, label, resolved, level)
+
+
+def _nearest_page_label(
+    y: float, numbers: Sequence[TocLayoutLine]
+) -> Optional[TocLayoutLine]:
+    """@brief Find the page-number line that shares this title's baseline."""
+    best: Optional[TocLayoutLine] = None
+    best_distance: Optional[float] = None
+    for line in numbers:
+        size = max(line.font_size or 0.0, line.height or 0.0, 8.0)
+        limit = max(size * 0.75, 4.0)
+        distance = abs(line.y - y)
+        if distance <= limit and (best_distance is None or distance < best_distance):
+            best = line
+            best_distance = distance
+    return best
 
 
 def _build_layout_bands(toc_page_layouts: Dict[int, Sequence[TocLayoutLine]]) -> List[float]:

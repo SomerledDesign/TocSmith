@@ -9,10 +9,11 @@ heuristics use for TOC and heading matching.
 """
 
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .analyzer import analyze_pdf_features
+from .analyzer import _is_dot_leader_text, _is_standalone_page_label, analyze_pdf_features
 from .models import AnalysisResult, TocLayoutLine
 
 
@@ -33,6 +34,7 @@ def analyze_pdf_file(pdf_path: str | Path) -> AnalysisResult:
         bookmark_titles,
         toc_page_layouts=toc_page_layouts,
         page_layouts=page_layouts,
+        explicit_page_labels=_explicit_page_labels(reader),
     )
 
 
@@ -112,15 +114,23 @@ def _extract_page_layout_lines(page: Any) -> List[TocLayoutLine]:
             return
         cleaned = text.strip()
         size = float(font_size) if font_size else 0.0
+        # Store page space when the text and CTM are axis-aligned. A flipped
+        # matrix (positive x scale, negative y scale) otherwise sorts the
+        # contents from the bottom of the page upward.
+        placement = _page_text_placement(size, tm, cm)
+        if placement is None:
+            origin_x, origin_y, page_size = float(tm[4]), float(tm[5]), size
+        else:
+            origin_x, origin_y, page_size = placement
         # pypdf does not expose glyph advances here; estimate a conservative span
         # width from character count so TOC link rectangles stay usable.
-        estimated_width = max(len(cleaned), 1) * max(size, 1.0) * 0.5
+        estimated_width = max(len(cleaned), 1) * max(page_size, 1.0) * 0.5
         spans.append(
             {
                 "text": cleaned,
-                "x": float(tm[4]),
-                "y": float(tm[5]),
-                "font_size": size,
+                "x": origin_x,
+                "y": origin_y,
+                "font_size": page_size,
                 "font_name": "" if font_dict is None else str(font_dict.get("/BaseFont", "")),
                 "width": estimated_width,
                 "bbox": _span_page_bbox(cleaned, size, tm, cm),
@@ -128,7 +138,69 @@ def _extract_page_layout_lines(page: Any) -> List[TocLayoutLine]:
         )
 
     page.extract_text(visitor_text=visitor)
-    return _group_spans_into_lines(spans)
+    lines = _group_spans_into_lines(spans)
+    width, height = _page_size(page)
+    if width is None or height is None:
+        return lines
+    return [replace(line, page_width=width, page_height=height) for line in lines]
+
+
+def _page_size(page: Any) -> Tuple[Optional[float], Optional[float]]:
+    """@brief Read the media-box width and height in default user space."""
+    box = getattr(page, "mediabox", None)
+    if box is None:
+        return None, None
+    try:
+        return float(box.width), float(box.height)
+    except (AttributeError, TypeError, ValueError):
+        return None, None
+
+
+def _page_text_placement(
+    font_size: float,
+    tm: Any,
+    cm: Any,
+) -> Optional[Tuple[float, float, float]]:
+    """@brief Map a text origin into page space.
+
+    @return ``(x, y, font size)`` on the page, or ``None`` when the transform
+        is rotated or skewed and the raw text position should be kept.
+    """
+    try:
+        a, b, c, d, e, f = (float(value) for value in tm)
+        ca, cb, cc, cd, ce, cf = (
+            float(value) for value in (cm if cm is not None else (1, 0, 0, 1, 0, 0))
+        )
+    except (TypeError, ValueError):
+        return None
+    pa = a * ca + b * cc
+    pb = a * cb + b * cd
+    pc = c * ca + d * cc
+    pd = c * cb + d * cd
+    pe = e * ca + f * cc + ce
+    pf = e * cb + f * cd + cf
+    if abs(pb) > 1e-3 * max(abs(pa), 1e-9) or abs(pc) > 1e-3 * max(abs(pd), 1e-9):
+        return None
+    size = font_size if font_size else 1.0
+    vertical = abs(pd) * size
+    if abs(pa) * size <= 0 or vertical <= 0:
+        return None
+    return pe, pf, vertical
+
+
+def _explicit_page_labels(reader: Any) -> Optional[List[str]]:
+    """@brief Return ``/PageLabels`` values, or ``None`` when the tree is absent.
+
+    pypdf synthesizes ``1, 2, 3...`` when the catalog has no page-label tree.
+    Those are not printed labels, so they must not override footer text.
+    """
+    root = getattr(reader, "root_object", None)
+    if root is None or "/PageLabels" not in root:
+        return None
+    try:
+        return [str(label) for label in reader.page_labels]
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _span_page_bbox(
@@ -207,24 +279,66 @@ def _group_spans_into_lines(spans: List[Dict[str, Any]], y_tolerance: float = 2.
     lines: List[TocLayoutLine] = []
     for group in groups:
         group.sort(key=lambda span: span["x"])
-        texts = [span["text"] for span in group]
-        font_names = [span["font_name"] for span in group if span["font_name"]]
-        font_sizes = [span["font_size"] for span in group if span["font_size"]]
-        font_size = max(font_sizes) if font_sizes else 0.0
-        x_min = min(span["x"] for span in group)
-        x_max = max(span["x"] + float(span.get("width") or 0.0) for span in group)
-        width = max(x_max - x_min, font_size if font_size else 1.0)
-        height = font_size if font_size else None
-        lines.append(
-            TocLayoutLine(
-                text=" ".join(texts),
-                x=x_min,
-                y=max(span["y"] for span in group),
-                font_size=font_size,
-                font_name=Counter(font_names).most_common(1)[0][0] if font_names else "",
-                width=width,
-                height=height,
-                bbox=_union_bboxes(span.get("bbox") for span in group),
-            )
-        )
+        for cluster in _split_span_row(group):
+            lines.append(_line_from_spans(cluster))
     return lines
+
+
+def _split_span_row(spans: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """@brief Keep a baseline's columns apart while joining words and leaders.
+
+    Page-number spans stay in their own column even when a dot leader's
+    estimated width runs into them.
+    """
+    if not spans:
+        return []
+    clusters: List[List[Dict[str, Any]]] = [[spans[0]]]
+    for span in spans[1:]:
+        if _span_joins_cluster(clusters[-1], span):
+            clusters[-1].append(span)
+        else:
+            clusters.append([span])
+    return clusters
+
+
+def _span_joins_cluster(cluster: List[Dict[str, Any]], span: Dict[str, Any]) -> bool:
+    """@brief Decide whether a span continues the current column."""
+    text = str(span.get("text") or "")
+    previous = cluster[-1]
+    previous_text = str(previous.get("text") or "")
+    if _is_standalone_page_label(text):
+        return all(_is_standalone_page_label(str(item.get("text") or "")) for item in cluster)
+    if _is_dot_leader_text(text):
+        return not _is_standalone_page_label(previous_text)
+    if _is_standalone_page_label(previous_text):
+        return False
+    size = max(float(span.get("font_size") or 0.0), float(previous.get("font_size") or 0.0), 8.0)
+    # A jump in the left edge is another column. Width estimates are too coarse
+    # to decide that on their own; they often reach across the gutter.
+    if float(span["x"]) - float(previous["x"]) > max(size * 4.0, 28.0):
+        return False
+    gap_limit = max(size * 1.25, 8.0)
+    right = float(previous["x"]) + float(previous.get("width") or 0.0)
+    return float(span["x"]) - right <= gap_limit
+
+
+def _line_from_spans(group: List[Dict[str, Any]]) -> TocLayoutLine:
+    """@brief Build one layout line from spans that share a column and baseline."""
+    texts = [span["text"] for span in group]
+    font_names = [span["font_name"] for span in group if span["font_name"]]
+    font_sizes = [span["font_size"] for span in group if span["font_size"]]
+    font_size = max(font_sizes) if font_sizes else 0.0
+    x_min = min(span["x"] for span in group)
+    x_max = max(span["x"] + float(span.get("width") or 0.0) for span in group)
+    width = max(x_max - x_min, font_size if font_size else 1.0)
+    height = font_size if font_size else None
+    return TocLayoutLine(
+        text=" ".join(texts),
+        x=x_min,
+        y=max(span["y"] for span in group),
+        font_size=font_size,
+        font_name=Counter(font_names).most_common(1)[0][0] if font_names else "",
+        width=width,
+        height=height,
+        bbox=_union_bboxes(span.get("bbox") for span in group),
+    )
