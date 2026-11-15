@@ -13,7 +13,7 @@ TocSmith can:
 - locate likely table-of-contents pages
 - extract major sections, subsections, and appendices
 - resolve printed TOC entries to headings in the document
-- generate a nested PDF sidebar outline
+- generate a nested PDF sidebar outline, or keep one the PDF already has
 - crop oversized pages when credible crop marks identify the intended trim
 - normalize rotated pages and add a configurable footer watermark
 - write a human-readable decision log explaining every accepted or skipped item
@@ -60,6 +60,35 @@ repository:
 
 The neutral default watermark is `TocSmith`. Use `--watermark ""` to disable
 the footer.
+
+## Existing bookmarks
+
+When the PDF already has a sidebar outline, TocSmith keeps it. The owner's
+outline, named destinations, Title, Author, and document language stay in the
+finished copy. Generated bookmarks are added only when the source has no
+outline, or when you ask for a different policy:
+
+```sh
+./tocsmith manual.pdf --write-bookmarks --outline keep
+./tocsmith manual.pdf --write-bookmarks --outline merge
+./tocsmith manual.pdf --write-bookmarks --outline replace
+```
+
+- `keep` (the default when the source has an outline) leaves that outline unchanged.
+- `merge` keeps it and adds generated entries whose titles are not already there.
+- `replace` discards it and writes the generated outline, which is what 1.1.0 did.
+
+Contents rows are linked whether or not new bookmarks are written. Each row is
+matched to an existing bookmark or named destination by its title, and
+otherwise to the page resolved from the printed page label. The link uses that
+destination. Links already on the page are kept, and a row that is already
+linked is not linked again.
+
+```sh
+./tocsmith manual.pdf --write-bookmarks --no-links
+```
+
+`--links` is the default. `--no-links` skips the link pass.
 
 ### Homebrew
 
@@ -117,9 +146,9 @@ The evolving design, completed milestones, and known weak spots live in
 
 TocSmith keeps a public release version and a separate cumulative build number:
 
-- Release: **1.1.0**
-- Build: **348**
-- Display: **TocSmith 1.1.0 (348)**
+- Release: **1.1.1**
+- Build: **349**
+- Display: **TocSmith 1.1.1 (349)**
 
 The release version communicates compatibility. The build number preserves the
 project's longer experimental lineage. Both values have a single source of

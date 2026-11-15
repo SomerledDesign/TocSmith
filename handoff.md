@@ -1,20 +1,20 @@
 # Handoff
 
-Current milestone: TocSmith 1.1.1 on `fix/1.1.1` (off `main`). Do not tag, release, bump the Homebrew tap, or merge.
+Current milestone: TocSmith 1.1.1 implemented on `fix/1.1.1` (off `main`). Draft notes are in `docs/releases/v1.1.1.md`. Do not tag, release, bump the Homebrew tap, or merge.
 
-Work started from the owner's v1.1.0 run (`b0d74a5`) of
-`tocsmith SuperCalc_Manual.pdf --write-bookmarks --output SCM-writ.pdf --watermark Somerled.Design`.
-The fixture is `tests/fixtures/SuperCalc_Manual.pdf` (56 pages, 68 two-level bookmarks, 112 named destinations, no links, no `/PageLabels`). Contents sit on pages iii/iv in three columns (chapter label, section title with dot leaders, page number) using printed labels such as `7–4`, `A–1`, and `Index–1`.
+The owner's v1.1.0 command
+`tocsmith SuperCalc_Manual.pdf --write-bookmarks --output SCM-writ.pdf --watermark Somerled.Design`
+is covered by `tests/fixtures/SuperCalc_Manual.pdf`. On that fixture 1.1.1 keeps all 68 bookmarks (same titles, depths, and pages), keeps Title, Author, `/Lang`, and the 112 named destinations, and writes 68 contents links (51 section rows and 17 chapter rows) whose targets match those bookmark pages. With watermark `Somerled.Design` the output is 1,023,659 bytes against a 955,335 byte input (about 1.07×, under the 1.3× limit).
 
-Planned milestones, each with tests, keeping the existing suite green:
-- M1 Preserve an existing outline (`--outline keep|merge|replace`, default keep when the source has one), copy Title/Author/`/Lang`, compress content streams after watermarking, log how many bookmarks were kept.
-- M2 Independent TOC link pass (`--links`/`--no-links`, default on) matching each contents row to an existing bookmark or named destination, without stacking duplicate links.
-- M3 Read the contents in page coordinates: column-local row merge, pair titles with the page-number column, resolve chapter-page labels from footers or `/PageLabels`, page-size-relative thresholds, no single-manual special case.
-- M4 README, draft 1.1.1 notes, version bump to 1.1.1. No tag, release, or tap.
+Shipped in 1.1.1 (build 349):
+- `--outline {keep,merge,replace}` defaults to keep when the source has an outline. `merge` adds only missing generated entries. `replace` is the old discard-and-rewrite path. The log records how many bookmarks were kept.
+- Title, Author, and catalog `/Lang` are copied. Content streams are flate-compressed after watermarking.
+- `--links` / `--no-links` (default on). The link pass is independent of bookmark generation. A row matches an existing bookmark or named destination by normalized title, otherwise its resolved page, and the link reuses that destination. An existing link on the same row is not duplicated.
+- Contents are read in page coordinates. Rows merge inside a column only. Titles pair with a separate page-number column by vertical overlap. Chapter-page labels (`7-4`, `A-1`, `Index-1`) resolve through printed footers, or `/PageLabels` when that tree is present. Thresholds are relative to the page size. The single-manual footer exception is gone. A following contents page is detected from its number column.
 
-M1 is in the tree: `--outline {keep,merge,replace}` (default keep when the source has an outline), Title/Author/`/Lang` copied, content streams compressed after the watermark, and the log reports how many bookmarks were kept. The SuperCalc fixture keeps all 68 bookmarks and its metadata, and the watermarked file stays under 1.3× the input.
+Verified with `python3 -m unittest discover -s tests` (78 tests, the previous 70 plus the 1.1.1 cases). pypdf 6.21.4. Not opened in macOS Preview.
 
-M2 is in the tree: TOC links are a separate pass (`--links` / `--no-links`, default on). Each contents row is matched to an existing bookmark or named destination by normalized title, otherwise to its resolved page, and the link reuses that destination. Existing links that already cover the row are kept. On the SuperCalc fixture the 51 section rows and 17 chapter rows each land on the matching bookmark page while the original 68 bookmarks stay in place.
+Still worth a look on a real Mac: click the contents rows in Preview (rectangles are estimated from character counts), confirm the footer reads `Somerled.Design` and sits on the page, and confirm sidebar bookmarks still open the same views as before.
 
 Previous milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
 
@@ -227,10 +227,10 @@ Known constraints:
 - Text-layer extraction/OCR artifacts can still distort titles, such as umlauts or ligatures rendered incorrectly.
 - Full-book analysis runs are becoming expensive enough that large PDFs may need more targeted verification while heuristics are still evolving.
 - The repo-root `toc-bookmarks` launcher now installs declared dependencies into `.venv`; direct `python3 -m toc_bookmarks` still depends on the active Python environment already having `pypdf`.
-- Bookmark writing currently creates a new output PDF; it does not merge with or preserve existing bookmark trees intentionally.
+- Bookmark writing creates a new PDF. By default it keeps an outline the source already has (`--outline keep`). `--outline merge` adds missing generated entries. `--outline replace` discards the existing outline.
 
 Active Mode: General Systems Mode
-Last successful build command: brew install SomerledDesign/tap/tocsmith
+Last successful build command: python3 -m unittest discover -s tests
 Outstanding blockers:
 - None for Homebrew distribution; the public one-line install, functional
   formula test, version command, and installed man page all pass.
