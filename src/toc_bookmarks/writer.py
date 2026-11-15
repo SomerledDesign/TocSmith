@@ -12,10 +12,15 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .analyzer import is_confident_bookmark_candidate
+from .analyzer import _normalize_title, is_confident_bookmark_candidate
 from .finisher import DEFAULT_WATERMARK, finish_pdf_pages
 from .models import BookmarkWriteResult, TocEntry
 from .pdfio import _open_pdf_reader, analyze_pdf_file
+
+#: Outline modes. ``keep`` leaves the source outline untouched, ``merge`` adds
+#: only generated entries whose titles are not already present, and ``replace``
+#: discards the source outline and writes the generated one.
+OUTLINE_MODES = ("keep", "merge", "replace")
 
 
 def write_bookmarks_for_pdf(
@@ -23,8 +28,14 @@ def write_bookmarks_for_pdf(
     output_path: str | Path | None = None,
     min_match_score: float = 0.85,
     watermark: str = DEFAULT_WATERMARK,
+    outline: str | None = None,
+    links: bool = True,
 ) -> BookmarkWriteResult:
     """@brief Analyze a PDF and write a new copy with generated bookmarks.
+
+    When the source already has an outline and ``outline`` is omitted, the
+    existing outline is kept. Pass ``replace`` for the previous behavior of
+    discarding it, or ``merge`` to add only generated entries that are missing.
 
     @param input_path Source PDF path.
     @param output_path Optional destination path for the new bookmarked PDF.
@@ -32,9 +43,16 @@ def write_bookmarks_for_pdf(
         accepted.
     @param watermark Footer text applied to output pages; an empty value
         disables watermarking.
+    @param outline ``keep``, ``merge``, or ``replace``. ``None`` keeps an
+        existing outline and generates one when the source has none.
+    @param links When true (the default), add TOC link annotations. ``False``
+        matches ``--no-links``.
     @return Summary of the created PDF, log file, and skipped titles.
     @throw RuntimeError Raised when the PDF lacks extractable text.
+    @throw ValueError Raised when ``outline`` is not a known mode.
     """
+    if outline is not None and outline not in OUTLINE_MODES:
+        raise ValueError(f"outline must be one of {', '.join(OUTLINE_MODES)}")
     input_file = Path(input_path)
     destination = Path(output_path) if output_path else input_file.with_name(
         input_file.stem + ".bookmarked.pdf"
@@ -46,8 +64,20 @@ def write_bookmarks_for_pdf(
         raise RuntimeError("PDF does not appear to contain extractable text. Skipping.")
 
     reader = _open_pdf_reader(input_file)
+    source_outline_count = _count_outline_items(getattr(reader, "outline", None))
+    outline_mode = outline or ("keep" if source_outline_count else "replace")
+    import_outline = outline_mode in {"keep", "merge"}
     writer = _create_writer()
-    writer.append(reader, import_outline=False)
+    writer.append(reader, import_outline=import_outline)
+    _copy_document_metadata(reader, writer)
+    kept_bookmark_count = (
+        _count_outline_items(getattr(writer, "outline", None)) if import_outline else 0
+    )
+    # A writer double that only records calls has no imported outline. Fall
+    # back to the count taken from the reader so the log still reports it.
+    if import_outline and kept_bookmark_count == 0:
+        kept_bookmark_count = source_outline_count
+    existing_outline_items = _index_outline_by_title(writer) if outline_mode == "merge" else {}
 
     parent_by_level: Dict[int, Any] = {}
     accepted_entry_by_level: Dict[int, TocEntry] = {}
@@ -59,13 +89,37 @@ def write_bookmarks_for_pdf(
         f"Input PDF: {input_file}",
         f"Output PDF: {destination}",
         f"Minimum root match score: {min_match_score:.2f}",
+        f"Outline mode: {outline_mode}",
+        f"Kept existing bookmarks: {kept_bookmark_count}",
         "",
         "Decisions:",
     ]
     if not analysis.toc_entries:
         log_lines.append("No TOC entries detected; output PDF copied without generated bookmarks.")
+    elif outline_mode == "keep":
+        log_lines.append(
+            "Existing outline kept; generated bookmarks were not added."
+        )
 
     for entry in analysis.toc_entries:
+        if outline_mode == "keep":
+            continue
+        if outline_mode == "merge" and _normalize_title(entry.title) in existing_outline_items:
+            parent_by_level[entry.level] = existing_outline_items[_normalize_title(entry.title)]
+            accepted_entry_by_level[entry.level] = entry
+            _clear_deeper_levels(parent_by_level, entry.level)
+            _clear_deeper_levels(accepted_entry_by_level, entry.level)
+            log_lines.append(
+                _format_log_line(
+                    entry,
+                    {
+                        "write": False,
+                        "threshold": min_match_score,
+                        "reason": "already present in the existing outline",
+                    },
+                )
+            )
+            continue
         decision = _evaluate_entry(
             analysis.toc_entries,
             entry,
@@ -93,7 +147,10 @@ def write_bookmarks_for_pdf(
 
     finish_stats = finish_pdf_pages(writer.pages, watermark=watermark)
     link_log_lines: List[str] = []
-    for entry in pending_link_entries:
+    link_targets = pending_link_entries if links else []
+    if not links:
+        link_log_lines.append("TOC link annotations disabled.")
+    for entry in link_targets:
         link_decision = _try_add_toc_link_annotation(writer, entry)
         if link_decision["linked"]:
             link_annotation_count += 1
@@ -113,6 +170,9 @@ def write_bookmarks_for_pdf(
             f"TOC link annotations: {link_annotation_count}",
         ]
     )
+    # Watermarking merges an uncompressed content stream into every page.
+    # Reflate after that merge so a footer does not inflate the file.
+    _compress_content_streams(writer)
     with destination.open("wb") as handle:
         writer.write(handle)
     log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
@@ -125,7 +185,134 @@ def write_bookmarks_for_pdf(
         cropped_page_count=finish_stats.cropped_page_count,
         watermarked_page_count=finish_stats.watermarked_page_count,
         link_annotation_count=link_annotation_count,
+        kept_bookmark_count=kept_bookmark_count,
+        outline_mode=outline_mode,
     )
+
+
+def _count_outline_items(outline: Any) -> int:
+    """@brief Count bookmark nodes in a pypdf outline tree.
+
+    @param outline Outline sequence, or anything that is not a sequence.
+    @return Number of title-bearing outline items. Nested lists are walked.
+    """
+    if not outline or isinstance(outline, (str, bytes)):
+        return 0
+    try:
+        items = list(outline)
+    except TypeError:
+        return 0
+    count = 0
+    for item in items:
+        if isinstance(item, list):
+            count += _count_outline_items(item)
+            continue
+        title = getattr(item, "title", None)
+        if isinstance(title, str) and title.strip():
+            count += 1
+        elif isinstance(item, dict) and item.get("title"):
+            count += 1
+    return count
+
+
+def _index_outline_by_title(writer: Any) -> Dict[str, Any]:
+    """@brief Map a normalized bookmark title to its outline node.
+
+    The first occurrence wins so later duplicates do not steal the parent a
+    merged child should hang from.
+    """
+    indexed: Dict[str, Any] = {}
+    outline = getattr(writer, "outline", None)
+    if not outline:
+        return indexed
+    try:
+        items = list(outline)
+    except TypeError:
+        return indexed
+
+    def visit(nodes: List[Any]) -> None:
+        for item in nodes:
+            if isinstance(item, list):
+                visit(item)
+                continue
+            title = getattr(item, "title", None)
+            if isinstance(title, str) and title.strip():
+                # ``outline`` yields detached Destination copies. Children have
+                # to be attached to the live tree node or they never show up.
+                indexed.setdefault(_normalize_title(title), getattr(item, "node", None) or item)
+
+    visit(items)
+    return indexed
+
+
+def _copy_document_metadata(reader: Any, writer: Any) -> None:
+    """@brief Copy the info dictionary and catalog ``/Lang`` onto the writer.
+
+    ``append`` copies pages and, when asked, the outline. It does not copy
+    ``/Info`` or the catalog language, so Title, Author, and Lang would
+    otherwise disappear from the finished file.
+    """
+    info = getattr(reader, "metadata", None)
+    add_metadata = getattr(writer, "add_metadata", None)
+    if info is not None and callable(add_metadata):
+        payload: Dict[str, str] = {}
+        try:
+            items = list(info.items())
+        except (AttributeError, TypeError):
+            items = []
+        for key, value in items:
+            if value is None:
+                continue
+            payload[str(key)] = str(value)
+        if payload:
+            add_metadata(payload)
+    lang = _document_language(reader)
+    root = getattr(writer, "_root_object", None)
+    if lang and root is not None:
+        from pypdf.generic import NameObject, TextStringObject
+
+        root[NameObject("/Lang")] = TextStringObject(lang)
+
+
+def _document_language(reader: Any) -> Optional[str]:
+    """@brief Read catalog ``/Lang`` from a reader, if it has one."""
+    root = getattr(reader, "root_object", None)
+    if root is None:
+        trailer = getattr(reader, "trailer", None)
+        if trailer is not None:
+            try:
+                root = trailer.get("/Root")
+            except (AttributeError, TypeError):
+                root = None
+    if root is None:
+        return None
+    try:
+        lang = root.get("/Lang")
+    except (AttributeError, TypeError):
+        return None
+    if lang is None:
+        return None
+    text = str(lang).strip()
+    return text or None
+
+
+def _compress_content_streams(writer: Any) -> None:
+    """@brief Flate-compress each page content stream after finishing.
+
+    Pages that are not attached to a writer (unit-test stand-ins) are skipped.
+    A failure to compress one page must not discard the finished document.
+    """
+    pages = getattr(writer, "pages", None)
+    if not pages:
+        return
+    for page in pages:
+        compress = getattr(page, "compress_content_streams", None)
+        if not callable(compress):
+            continue
+        try:
+            compress()
+        except (AttributeError, TypeError, ValueError):
+            continue
 
 
 def _evaluate_entry(

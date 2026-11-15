@@ -3,6 +3,8 @@ pdfs/
 *.pdf
 *.pdf.log.txt
 *.bookmarked.*
+# Committed regression fixtures. The rules above ignore every other PDF.
+!tests/fixtures/*.pdf
 
 # Private/local configuration and credentials
 .env

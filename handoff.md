@@ -1,6 +1,20 @@
 # Handoff
 
-Current milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
+Current milestone: TocSmith 1.1.1 on `fix/1.1.1` (off `main`). Do not tag, release, bump the Homebrew tap, or merge.
+
+Work started from the owner's v1.1.0 run (`b0d74a5`) of
+`tocsmith SuperCalc_Manual.pdf --write-bookmarks --output SCM-writ.pdf --watermark Somerled.Design`.
+The fixture is `tests/fixtures/SuperCalc_Manual.pdf` (56 pages, 68 two-level bookmarks, 112 named destinations, no links, no `/PageLabels`). Contents sit on pages iii/iv in three columns (chapter label, section title with dot leaders, page number) using printed labels such as `7–4`, `A–1`, and `Index–1`.
+
+Planned milestones, each with tests, keeping the existing suite green:
+- M1 Preserve an existing outline (`--outline keep|merge|replace`, default keep when the source has one), copy Title/Author/`/Lang`, compress content streams after watermarking, log how many bookmarks were kept.
+- M2 Independent TOC link pass (`--links`/`--no-links`, default on) matching each contents row to an existing bookmark or named destination, without stacking duplicate links.
+- M3 Read the contents in page coordinates: column-local row merge, pair titles with the page-number column, resolve chapter-page labels from footers or `/PageLabels`, page-size-relative thresholds, no single-manual special case.
+- M4 README, draft 1.1.1 notes, version bump to 1.1.1. No tag, release, or tap.
+
+M1 is in the tree: `--outline {keep,merge,replace}` (default keep when the source has an outline), Title/Author/`/Lang` copied, content streams compressed after the watermark, and the log reports how many bookmarks were kept. The SuperCalc fixture keeps all 68 bookmarks and its metadata, and the watermarked file stays under 1.3× the input. The existing suite still passes.
+
+Previous milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
 
 Completed work:
 - Prepared v1.1.0 (build 348): merged main (v1.0.1 outline-nesting fix and
