@@ -12,7 +12,9 @@ Planned milestones, each with tests, keeping the existing suite green:
 - M3 Read the contents in page coordinates: column-local row merge, pair titles with the page-number column, resolve chapter-page labels from footers or `/PageLabels`, page-size-relative thresholds, no single-manual special case.
 - M4 README, draft 1.1.1 notes, version bump to 1.1.1. No tag, release, or tap.
 
-M1 is in the tree: `--outline {keep,merge,replace}` (default keep when the source has an outline), Title/Author/`/Lang` copied, content streams compressed after the watermark, and the log reports how many bookmarks were kept. The SuperCalc fixture keeps all 68 bookmarks and its metadata, and the watermarked file stays under 1.3× the input. The existing suite still passes.
+M1 is in the tree: `--outline {keep,merge,replace}` (default keep when the source has an outline), Title/Author/`/Lang` copied, content streams compressed after the watermark, and the log reports how many bookmarks were kept. The SuperCalc fixture keeps all 68 bookmarks and its metadata, and the watermarked file stays under 1.3× the input.
+
+M2 is in the tree: TOC links are a separate pass (`--links` / `--no-links`, default on). Each contents row is matched to an existing bookmark or named destination by normalized title, otherwise to its resolved page, and the link reuses that destination. Existing links that already cover the row are kept. On the SuperCalc fixture the 51 section rows and 17 chapter rows each land on the matching bookmark page while the original 68 bookmarks stay in place.
 
 Previous milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
 
