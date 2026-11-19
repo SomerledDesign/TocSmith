@@ -9,7 +9,7 @@ description = "Forge navigable, finished PDFs from printed tables of contents."
 requires-python = ">=3.9"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-dependencies = ["pypdf>=6.18.1,<7"]
+dependencies = ["pypdf>=6.21.4,<7"]
 
 [project.scripts]
 tocsmith = "toc_bookmarks.__main__:main"

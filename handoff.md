@@ -20,12 +20,19 @@ page: a failing page is logged as `SKIP page N` and left without a watermark.
 `FinishStats` gained `skipped_pages` and `box_notes`. Regression tests are in
 `tests/test_page_boxes.py` (9 tests). On the real file: 214 pages, 101
 bookmarks, 98 pages cropped, 214 watermarked, no skipped pages.
-Open: with pypdf 6.18.1 three 1.1.1 tests fail and contents links are not
-written (`PdfWriter.add_annotation` in 6.18.1 expects the old `/Dest` dict,
-so every link logs `annotation failed`) and the content-stream
-compression does not keep the size down. The same suite passes on pypdf
-6.21.4. Releasing 1.1.1 through Homebrew needs the formula's pypdf resource
-(and the `pyproject.toml` floor) raised, which needs the owner's approval.
+Dependency (owner-approved 2026-11-19): `pyproject.toml` now requires
+`pypdf>=6.21.4,<7`. With pypdf 6.18.1 three 1.1.1 tests failed and no contents
+links were written (`PdfWriter.add_annotation` in 6.18.1 expects the old
+`/Dest` dict, so every link logged `annotation failed`), and the output grew to
+6.9 MB. On 6.21.4 all 87 tests pass, and a packaged install (`pip install .`,
+`tocsmith --version` = `TocSmith 1.1.1 (349)`) writes the service supplement
+with 214 pages, 101 bookmarks, 101 contents links, 98 cropped and 214
+watermarked pages, 2,591,358 bytes (input 2,443,649). The tap formula's pypdf
+resource is bumped to 6.21.4 on the tap branch `tocsmith-pypdf-6.21.4` (not
+merged; the formula still points at the v1.1.0 tarball).
+Release order: merge `fix/mediabox-none` into `fix/1.1.1`, then `fix/1.1.1`
+into `main`, tag `v1.1.1`, then set the formula `url`/`sha256` to the v1.1.1
+tarball on the tap branch and merge it.
 
 Shipped in 1.1.1 (build 349):
 - `--outline {keep,merge,replace}` defaults to keep when the source has an outline. `merge` adds only missing generated entries. `replace` is the old discard-and-rewrite path. The log records how many bookmarks were kept.
