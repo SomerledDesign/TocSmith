@@ -1,6 +1,27 @@
 # Handoff
 
-Current milestone: TocSmith 1.1.1 implemented on `fix/1.1.1` (off `main`). Draft notes are in `docs/releases/v1.1.1.md`. Do not tag, release, bump the Homebrew tap, or merge.
+Current milestone: TocSmith 1.1.1 (build 349) released 2026-11-19 (owner-approved).
+- PR #2 (`fix/1.1.1`, with `fix/mediabox-none` merged in as 9432c03) merged to
+  `main` as 3919a58; 87/87 tests pass on pypdf 6.21.4. Annotated tag `v1.1.1`
+  on 3919a58; GitHub release "TocSmith 1.1.1" (no assets, like 1.1.0).
+- Source archive `v1.1.1.tar.gz` SHA-256
+  `595d9a24d334002c8d491aa815da079d811110dbf29d108e8ccac7ec0506a7a5`.
+- Tap `SomerledDesign/homebrew-tap`: `tocsmith-pypdf-6.21.4` merged to `main`
+  (24c46b8): formula pins v1.1.1 and pypdf 6.21.4; `brew style`, `brew audit
+  --strict --online` and `brew test` pass. Niveus upgraded to 1.1.1 (349).
+- Owner's 6P/6MP service supplement (pristine copy): 214 pages, 101
+  bookmarks, 101 contents links, 98 cropped, 214 watermarked, 2,591,358 bytes.
+- Known: running TocSmith on an already-finished PDF keeps its bookmarks and
+  does not duplicate links, but adds a second footer watermark.
+- Deferred (owner said "not now"): dash-style "Chapter Contents" rows such as
+  `Printer Features – 1-2` (HP LaserJet 4L/4P combined service manual finds no
+  TOC). Proposal: accept a dash before chapter-page numbers, treat "Chapter
+  Contents" or pages with 4+ dash-numbered rows as contents, skip "Fig"/"Tbl"
+  lists, and add chapter-level bookmarks.
+- Website `content/software/tocsmith.md` still shows 1.1.0 (348) and the
+  v1.1.0 archive/SHA; no website change was made (owner rule).
+
+Previous state:
 
 The owner's v1.1.0 command
 `tocsmith SuperCalc_Manual.pdf --write-bookmarks --output SCM-writ.pdf --watermark Somerled.Design`
