@@ -8,6 +8,7 @@ marks provide a credible inner page rectangle. Every page receives a small,
 centered footer watermark inside its final visible box.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
@@ -17,6 +18,16 @@ _STANDARD_TOLERANCE = 6.0
 _MAX_CROP_MARGIN = 144.0
 _MIN_CROP_MARGIN = 3.0
 DEFAULT_WATERMARK = "TocSmith"
+## @brief Page boundary boxes rewritten as direct rectangles before finishing.
+_PAGE_BOX_KEYS = ("/MediaBox", "/CropBox", "/BleedBox", "/TrimBox", "/ArtBox")
+## @brief Boxes a page may inherit from an ancestor /Pages node (PDF 1.7, 7.7.3.4).
+_INHERITABLE_BOX_KEYS = ("/MediaBox", "/CropBox")
+## @brief Media box assumed when a page has no usable one (US Letter, portrait).
+_FALLBACK_MEDIA_BOX = (0.0, 0.0, 612.0, 792.0)
+## @brief Guard against cyclic or absurdly deep /Parent chains.
+_MAX_PARENT_DEPTH = 64
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -25,27 +36,213 @@ class FinishStats:
 
     cropped_page_count: int = 0
     watermarked_page_count: int = 0
+    ## @brief Zero-based page indexes left unfinished, each with the reason.
+    skipped_pages: Tuple[Tuple[int, str], ...] = ()
+    ## @brief Box repairs made before finishing (for example, an assumed Letter
+    #  media box), each as a zero-based page index and a short description.
+    box_notes: Tuple[Tuple[int, str], ...] = ()
 
 
 def finish_pdf_pages(
     pages: Iterable[Any], watermark: str = DEFAULT_WATERMARK
 ) -> FinishStats:
-    """@brief Crop credibly marked oversized pages and watermark every page."""
+    """@brief Crop credibly marked oversized pages and watermark every page.
+
+    Page boxes are first rewritten as direct rectangles (see
+    normalize_page_boxes()), so indirect or inherited boxes on writer pages
+    cannot crash pypdf. A page that still fails is left unfinished, recorded in
+    FinishStats.skipped_pages and logged as a warning; the other pages are
+    finished as usual.
+
+    @param pages     Writable pypdf pages, normally ``PdfWriter.pages``.
+    @param watermark Footer text; an empty string disables watermarking.
+    @return Counts of cropped and watermarked pages, plus skipped pages and box
+            repairs.
+    """
     page_list = list(pages)
-    target_size = _infer_target_page_size(page_list)
+    box_notes: List[Tuple[int, str]] = []
+    skipped: List[Tuple[int, str]] = []
+    unusable = set()
+    for index, page in enumerate(page_list):
+        try:
+            box_notes.extend((index, note) for note in normalize_page_boxes(page))
+        except Exception as exc:
+            unusable.add(index)
+            skipped.append((index, f"page boxes unreadable: {_describe(exc)}"))
+
+    usable_pages = [page for index, page in enumerate(page_list) if index not in unusable]
+    try:
+        target_size = _infer_target_page_size(usable_pages)
+    except Exception as exc:
+        _LOGGER.warning(
+            "TocSmith: could not infer the page format (%s); assuming US Letter.",
+            _describe(exc),
+        )
+        target_size = (612.0, 792.0)
+
     cropped = 0
     watermarked = 0
-    for page in page_list:
-        crop_box = _detect_crop_box(page, target_size)
+    for index, page in enumerate(page_list):
+        if index in unusable:
+            continue
+        try:
+            crop_box = _detect_crop_box(page, target_size)
+            if crop_box is not None:
+                _apply_crop_box(page, crop_box)
+            if getattr(page, "rotation", 0):
+                page.transfer_rotation_to_content()
+            if watermark:
+                _add_footer_watermark(page, watermark)
+        except Exception as exc:
+            skipped.append((index, _describe(exc)))
+            continue
         if crop_box is not None:
-            _apply_crop_box(page, crop_box)
             cropped += 1
-        if getattr(page, "rotation", 0):
-            page.transfer_rotation_to_content()
         if watermark:
-            _add_footer_watermark(page, watermark)
             watermarked += 1
-    return FinishStats(cropped, watermarked)
+
+    skipped.sort()
+    for index, reason in skipped:
+        _LOGGER.warning(
+            "TocSmith: finishing failed on page %d, left without a watermark: %s",
+            index + 1,
+            reason,
+        )
+    return FinishStats(cropped, watermarked, tuple(skipped), tuple(box_notes))
+
+
+def normalize_page_boxes(page: Any) -> List[str]:
+    """@brief Rewrite a page's boundary boxes as direct, resolved rectangles.
+
+    pypdf 6.18.1 resolves an indirect box through ``page.pdf``, which is
+    ``None`` for pages copied into a ``PdfWriter``, so reading ``mediabox`` on
+    such a page raises ``AttributeError``. This resolves each box through its
+    own reference (or an ancestor /Pages node for /MediaBox and /CropBox),
+    validates it, and stores a direct rectangle on the page, so later pypdf
+    calls (``cropbox``, ``merge_page``, rotation transfer) see plain arrays.
+
+    A missing or invalid /MediaBox becomes US Letter; an invalid optional box
+    is removed, which makes viewers fall back to the media or crop box as the
+    PDF specification requires.
+
+    @param page A writable pypdf page dictionary.
+    @return Human-readable notes for every repair made (empty when the page was
+            already well formed apart from indirect references).
+    """
+    from pypdf.generic import NameObject, RectangleObject
+
+    notes: List[str] = []
+    for key in _PAGE_BOX_KEYS:
+        present, raw = _lookup_page_box(page, key, key in _INHERITABLE_BOX_KEYS)
+        box = _coerce_box(raw) if present else None
+        if box is None:
+            if key == "/MediaBox":
+                box = _FALLBACK_MEDIA_BOX
+                notes.append(
+                    "missing /MediaBox; assumed US Letter"
+                    if not present
+                    else "invalid /MediaBox; assumed US Letter"
+                )
+            else:
+                if present:
+                    notes.append(f"invalid {key} removed")
+                    if key in page:
+                        del page[NameObject(key)]
+                continue
+        page[NameObject(key)] = RectangleObject(box)
+    return notes
+
+
+def _lookup_page_box(page: Any, key: str, inherit: bool) -> Tuple[bool, Any]:
+    """@brief Find a usable box entry on the page or, if inheritable, an ancestor.
+
+    The page's own value wins when it is usable. When it is missing, broken or
+    malformed and the key is inheritable, the nearest ancestor /Pages node with
+    a usable value supplies it.
+
+    @param page    Page dictionary to start from.
+    @param key     Box name such as ``/MediaBox``.
+    @param inherit Whether to walk the /Parent chain.
+    @return ``(present, raw_value)``. ``present`` is true when the page or an
+            ancestor names the key at all; ``raw_value`` is unresolved and is
+            the page's own (possibly unusable) value when nothing usable exists.
+    """
+    own = _raw_get(page, key)
+    present = own is not None
+    node: Any = page
+    seen = set()
+    for _depth in range(_MAX_PARENT_DEPTH):
+        if node is None or id(node) in seen:
+            break
+        seen.add(id(node))
+        raw = _raw_get(node, key)
+        if raw is not None:
+            present = True
+            if _coerce_box(raw) is not None:
+                return True, raw
+        if not inherit:
+            break
+        node = _resolve(_raw_get(node, "/Parent"))
+    return present, own
+
+
+def _raw_get(node: Any, key: str) -> Any:
+    """@brief Read a dictionary entry without letting pypdf resolve it."""
+    try:
+        return dict.get(node, key)
+    except TypeError:
+        getter = getattr(node, "get", None)
+        return getter(key) if getter is not None else None
+
+
+def _resolve(value: Any) -> Any:
+    """@brief Follow indirect references through the document that owns them.
+
+    @return The direct object, or ``None`` when the reference is broken or
+            points at the PDF null object.
+    """
+    from pypdf.generic import IndirectObject, NullObject
+
+    for _step in range(_MAX_PARENT_DEPTH):
+        if not isinstance(value, IndirectObject):
+            break
+        try:
+            value = value.get_object()
+        except Exception:
+            return None
+    if isinstance(value, (IndirectObject, NullObject)):
+        return None
+    return value
+
+
+def _coerce_box(raw: Any) -> Optional[Tuple[float, float, float, float]]:
+    """@brief Turn a raw box value into ``(left, bottom, right, top)``.
+
+    Corner order is normalized and every number may itself be indirect.
+    Arrays longer than four values keep their first four, matching pypdf.
+
+    @return The rectangle, or ``None`` if the value is not a usable box.
+    """
+    value = _resolve(raw)
+    if value is None or isinstance(value, (str, bytes)):
+        return None
+    try:
+        numbers = [float(_resolve(item)) for item in list(value)[:4]]
+    except (TypeError, ValueError):
+        return None
+    if len(numbers) != 4:
+        return None
+    x1, y1, x2, y2 = numbers
+    box = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    if _box_area(box) <= 0:
+        return None
+    return box
+
+
+def _describe(exc: BaseException) -> str:
+    """@brief Format an exception as ``Type: message`` for logs."""
+    message = str(exc)
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 def _detect_crop_box(

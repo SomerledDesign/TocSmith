@@ -6,6 +6,27 @@ The owner's v1.1.0 command
 `tocsmith SuperCalc_Manual.pdf --write-bookmarks --output SCM-writ.pdf --watermark Somerled.Design`
 is covered by `tests/fixtures/SuperCalc_Manual.pdf`. On that fixture 1.1.1 keeps all 68 bookmarks (same titles, depths, and pages), keeps Title, Author, `/Lang`, and the 112 named destinations, and writes 68 contents links (51 section rows and 17 chapter rows) whose targets match those bookmark pages. With watermark `Somerled.Design` the output is 1,023,659 bytes against a 955,335 byte input (about 1.07×, under the 1.3× limit).
 
+Fix on `fix/mediabox-none` (off `fix/1.1.1`, for 1.1.1; not merged): the owner's
+`tocsmith HPLaserJet6P-6MP-ServiceSupp.pdf --write-bookmarks --output 6MP-writ.pdf --watermark Somerled.Design`
+crashed in 1.1.0 with `AttributeError: 'NoneType' object has no attribute 'get_object'`.
+Cause: 98 of the file's 214 pages keep `/MediaBox` as an indirect object, and
+pypdf 6.18.1 (the version the Homebrew formula pins) resolves an indirect box
+through `page.pdf`, which is `None` for pages in a `PdfWriter`; pypdf 6.21.4
+resolves it through the reference itself and does not crash.
+`finisher.normalize_page_boxes()` now rewrites every page box as a direct
+rectangle (inherited `/MediaBox`/`/CropBox` from the page tree; US Letter when
+no media box is usable; an invalid optional box is removed). Finishing is per
+page: a failing page is logged as `SKIP page N` and left without a watermark.
+`FinishStats` gained `skipped_pages` and `box_notes`. Regression tests are in
+`tests/test_page_boxes.py` (9 tests). On the real file: 214 pages, 101
+bookmarks, 98 pages cropped, 214 watermarked, no skipped pages.
+Open: with pypdf 6.18.1 three 1.1.1 tests fail and contents links are not
+written (`PdfWriter.add_annotation` in 6.18.1 expects the old `/Dest` dict,
+so every link logs `annotation failed`) and the content-stream
+compression does not keep the size down. The same suite passes on pypdf
+6.21.4. Releasing 1.1.1 through Homebrew needs the formula's pypdf resource
+(and the `pyproject.toml` floor) raised, which needs the owner's approval.
+
 Shipped in 1.1.1 (build 349):
 - `--outline {keep,merge,replace}` defaults to keep when the source has an outline. `merge` adds only missing generated entries. `replace` is the old discard-and-rewrite path. The log records how many bookmarks were kept.
 - Title, Author, and catalog `/Lang` are copied. Content streams are flate-compressed after watermarking.
