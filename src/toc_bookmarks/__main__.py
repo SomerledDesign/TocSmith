@@ -71,6 +71,26 @@ def main() -> int:
             "pass an empty string to disable it."
         ),
     )
+    parser.add_argument(
+        "--outline",
+        choices=("keep", "merge", "replace"),
+        default=None,
+        help=(
+            "How to treat an outline already in the PDF. "
+            "keep (the default when the source has one) leaves it unchanged; "
+            "merge adds only generated entries that are missing; "
+            "replace discards it and writes the generated outline."
+        ),
+    )
+    parser.add_argument(
+        "--links",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Add in-page links on TOC rows (the default). "
+            "--no-links writes bookmarks and finishing only."
+        ),
+    )
     args = parser.parse_args()
 
     if args.write_bookmarks or args.output is not None:
@@ -79,6 +99,8 @@ def main() -> int:
             output_path=args.output,
             min_match_score=args.min_match_score,
             watermark=args.watermark,
+            outline=args.outline,
+            links=args.links,
         )
         payload = {
             "pdf": str(args.pdf),
@@ -89,6 +111,10 @@ def main() -> int:
             "cropped_page_count": write_result.cropped_page_count,
             "watermarked_page_count": write_result.watermarked_page_count,
         }
+        kept = getattr(write_result, "kept_bookmark_count", None)
+        if isinstance(kept, int):
+            payload["kept_bookmark_count"] = kept
+            payload["outline_mode"] = getattr(write_result, "outline_mode", None)
         print(json.dumps(payload, indent=2))
         return 0
 

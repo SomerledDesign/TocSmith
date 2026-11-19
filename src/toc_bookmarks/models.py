@@ -31,6 +31,13 @@ class TocEntry:
     # Page-space (default user space) bounding box of the TOC row text as
     # (x0, y0, x1, y1), used for link annotations. ``None`` when unknown.
     toc_bbox: Optional[Tuple[float, float, float, float]] = None
+    # Printed label as it appears in the contents (``7-4``, ``A-1``, ``iv``).
+    # ``printed_page`` stays the integer value when the label is arabic or
+    # roman; chapter-page labels have no single integer and leave it empty.
+    printed_label: Optional[str] = None
+    # PDF page index resolved from a footer or ``/PageLabels`` map. When set,
+    # anchor matching keeps this page instead of guessing from heading text.
+    resolved_page_index: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -54,9 +61,15 @@ class TocLayoutLine:
     width: Optional[float] = None
     height: Optional[float] = None
     # Page-space bounding box (x0, y0, x1, y1) after applying the text and
-    # current transformation matrices; ``x``/``y``/``font_size`` stay in raw
-    # text space because the hierarchy heuristics are tuned on those values.
+    # current transformation matrices. ``x``/``y`` are page space when the
+    # extractor could convert them, so a flipped text matrix still sorts
+    # top-to-bottom. Callers that build lines directly may leave them in the
+    # coordinate system they measured.
     bbox: Optional[Tuple[float, float, float, float]] = None
+    # Media box of the source page, when the line came from a PDF. Thresholds
+    # that used to assume one scanned manual's text space use these instead.
+    page_width: Optional[float] = None
+    page_height: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -94,3 +107,5 @@ class BookmarkWriteResult:
     cropped_page_count: int = 0
     watermarked_page_count: int = 0
     link_annotation_count: int = 0
+    kept_bookmark_count: int = 0
+    outline_mode: str = "replace"

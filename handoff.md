@@ -1,6 +1,50 @@
 # Handoff
 
-Current milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
+Current milestone: TocSmith 1.1.1 implemented on `fix/1.1.1` (off `main`). Draft notes are in `docs/releases/v1.1.1.md`. Do not tag, release, bump the Homebrew tap, or merge.
+
+The owner's v1.1.0 command
+`tocsmith SuperCalc_Manual.pdf --write-bookmarks --output SCM-writ.pdf --watermark Somerled.Design`
+is covered by `tests/fixtures/SuperCalc_Manual.pdf`. On that fixture 1.1.1 keeps all 68 bookmarks (same titles, depths, and pages), keeps Title, Author, `/Lang`, and the 112 named destinations, and writes 68 contents links (51 section rows and 17 chapter rows) whose targets match those bookmark pages. With watermark `Somerled.Design` the output is 1,023,659 bytes against a 955,335 byte input (about 1.07×, under the 1.3× limit).
+
+Fix on `fix/mediabox-none` (off `fix/1.1.1`, for 1.1.1; not merged): the owner's
+`tocsmith HPLaserJet6P-6MP-ServiceSupp.pdf --write-bookmarks --output 6MP-writ.pdf --watermark Somerled.Design`
+crashed in 1.1.0 with `AttributeError: 'NoneType' object has no attribute 'get_object'`.
+Cause: 98 of the file's 214 pages keep `/MediaBox` as an indirect object, and
+pypdf 6.18.1 (the version the Homebrew formula pins) resolves an indirect box
+through `page.pdf`, which is `None` for pages in a `PdfWriter`; pypdf 6.21.4
+resolves it through the reference itself and does not crash.
+`finisher.normalize_page_boxes()` now rewrites every page box as a direct
+rectangle (inherited `/MediaBox`/`/CropBox` from the page tree; US Letter when
+no media box is usable; an invalid optional box is removed). Finishing is per
+page: a failing page is logged as `SKIP page N` and left without a watermark.
+`FinishStats` gained `skipped_pages` and `box_notes`. Regression tests are in
+`tests/test_page_boxes.py` (9 tests). On the real file: 214 pages, 101
+bookmarks, 98 pages cropped, 214 watermarked, no skipped pages.
+Dependency (owner-approved 2026-11-19): `pyproject.toml` now requires
+`pypdf>=6.21.4,<7`. With pypdf 6.18.1 three 1.1.1 tests failed and no contents
+links were written (`PdfWriter.add_annotation` in 6.18.1 expects the old
+`/Dest` dict, so every link logged `annotation failed`), and the output grew to
+6.9 MB. On 6.21.4 all 87 tests pass, and a packaged install (`pip install .`,
+`tocsmith --version` = `TocSmith 1.1.1 (349)`) writes the service supplement
+with 214 pages, 101 bookmarks, 101 contents links, 98 cropped and 214
+watermarked pages, 2,591,358 bytes (input 2,443,649). The tap formula's pypdf
+resource is bumped to 6.21.4 on the tap branch `tocsmith-pypdf-6.21.4` (not
+merged; the formula still points at the v1.1.0 tarball).
+Release order: merge `fix/mediabox-none` into `fix/1.1.1`, then `fix/1.1.1`
+into `main`, tag `v1.1.1`, then set the formula `url`/`sha256` to the v1.1.1
+tarball on the tap branch and merge it.
+
+Shipped in 1.1.1 (build 349):
+- `--outline {keep,merge,replace}` defaults to keep when the source has an outline. `merge` adds only missing generated entries. `replace` is the old discard-and-rewrite path. The log records how many bookmarks were kept.
+- Title, Author, and catalog `/Lang` are copied. Content streams are flate-compressed after watermarking.
+- `--links` / `--no-links` (default on). The link pass is independent of bookmark generation. A row matches an existing bookmark or named destination by normalized title, otherwise its resolved page, and the link reuses that destination. An existing link on the same row is not duplicated.
+- Contents are read in page coordinates. Rows merge inside a column only. Titles pair with a separate page-number column by vertical overlap. Chapter-page labels (`7-4`, `A-1`, `Index-1`) resolve through printed footers, or `/PageLabels` when that tree is present. Thresholds are relative to the page size. The single-manual footer exception is gone. A following contents page is detected from its number column.
+
+Verified with `python3 -m unittest discover -s tests` (78 tests, the previous 70 plus the 1.1.1 cases). pypdf 6.21.4. Not opened in macOS Preview.
+
+Still worth a look on a real Mac: click the contents rows in Preview (rectangles are estimated from character counts), confirm the footer reads `Somerled.Design` and sits on the page, and confirm sidebar bookmarks still open the same views as before.
+
+Previous milestone: Milestone 4 TOC link annotations (conservative) complete; Milestone 7 Homebrew distribution complete
 
 Completed work:
 - Prepared v1.1.0 (build 348): merged main (v1.0.1 outline-nesting fix and
@@ -211,10 +255,10 @@ Known constraints:
 - Text-layer extraction/OCR artifacts can still distort titles, such as umlauts or ligatures rendered incorrectly.
 - Full-book analysis runs are becoming expensive enough that large PDFs may need more targeted verification while heuristics are still evolving.
 - The repo-root `toc-bookmarks` launcher now installs declared dependencies into `.venv`; direct `python3 -m toc_bookmarks` still depends on the active Python environment already having `pypdf`.
-- Bookmark writing currently creates a new output PDF; it does not merge with or preserve existing bookmark trees intentionally.
+- Bookmark writing creates a new PDF. By default it keeps an outline the source already has (`--outline keep`). `--outline merge` adds missing generated entries. `--outline replace` discards the existing outline.
 
 Active Mode: General Systems Mode
-Last successful build command: brew install SomerledDesign/tap/tocsmith
+Last successful build command: python3 -m unittest discover -s tests
 Outstanding blockers:
 - None for Homebrew distribution; the public one-line install, functional
   formula test, version command, and installed man page all pass.

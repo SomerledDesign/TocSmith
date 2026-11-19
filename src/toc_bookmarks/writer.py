@@ -12,10 +12,15 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .analyzer import is_confident_bookmark_candidate
+from .analyzer import _normalize_title, is_confident_bookmark_candidate
 from .finisher import DEFAULT_WATERMARK, finish_pdf_pages
 from .models import BookmarkWriteResult, TocEntry
 from .pdfio import _open_pdf_reader, analyze_pdf_file
+
+#: Outline modes. ``keep`` leaves the source outline untouched, ``merge`` adds
+#: only generated entries whose titles are not already present, and ``replace``
+#: discards the source outline and writes the generated one.
+OUTLINE_MODES = ("keep", "merge", "replace")
 
 
 def write_bookmarks_for_pdf(
@@ -23,8 +28,14 @@ def write_bookmarks_for_pdf(
     output_path: str | Path | None = None,
     min_match_score: float = 0.85,
     watermark: str = DEFAULT_WATERMARK,
+    outline: str | None = None,
+    links: bool = True,
 ) -> BookmarkWriteResult:
     """@brief Analyze a PDF and write a new copy with generated bookmarks.
+
+    When the source already has an outline and ``outline`` is omitted, the
+    existing outline is kept. Pass ``replace`` for the previous behavior of
+    discarding it, or ``merge`` to add only generated entries that are missing.
 
     @param input_path Source PDF path.
     @param output_path Optional destination path for the new bookmarked PDF.
@@ -32,9 +43,16 @@ def write_bookmarks_for_pdf(
         accepted.
     @param watermark Footer text applied to output pages; an empty value
         disables watermarking.
+    @param outline ``keep``, ``merge``, or ``replace``. ``None`` keeps an
+        existing outline and generates one when the source has none.
+    @param links When true (the default), add TOC link annotations. ``False``
+        matches ``--no-links``.
     @return Summary of the created PDF, log file, and skipped titles.
     @throw RuntimeError Raised when the PDF lacks extractable text.
+    @throw ValueError Raised when ``outline`` is not a known mode.
     """
+    if outline is not None and outline not in OUTLINE_MODES:
+        raise ValueError(f"outline must be one of {', '.join(OUTLINE_MODES)}")
     input_file = Path(input_path)
     destination = Path(output_path) if output_path else input_file.with_name(
         input_file.stem + ".bookmarked.pdf"
@@ -46,26 +64,61 @@ def write_bookmarks_for_pdf(
         raise RuntimeError("PDF does not appear to contain extractable text. Skipping.")
 
     reader = _open_pdf_reader(input_file)
+    source_outline_count = _count_outline_items(getattr(reader, "outline", None))
+    outline_mode = outline or ("keep" if source_outline_count else "replace")
+    import_outline = outline_mode in {"keep", "merge"}
     writer = _create_writer()
-    writer.append(reader, import_outline=False)
+    writer.append(reader, import_outline=import_outline)
+    _copy_document_metadata(reader, writer)
+    kept_bookmark_count = (
+        _count_outline_items(getattr(writer, "outline", None)) if import_outline else 0
+    )
+    # A writer double that only records calls has no imported outline. Fall
+    # back to the count taken from the reader so the log still reports it.
+    if import_outline and kept_bookmark_count == 0:
+        kept_bookmark_count = source_outline_count
+    existing_outline_items = _index_outline_by_title(writer) if outline_mode == "merge" else {}
 
     parent_by_level: Dict[int, Any] = {}
     accepted_entry_by_level: Dict[int, TocEntry] = {}
     written_count = 0
     link_annotation_count = 0
     skipped_titles: List[str] = []
-    pending_link_entries: List[TocEntry] = []
     log_lines = [
         f"Input PDF: {input_file}",
         f"Output PDF: {destination}",
         f"Minimum root match score: {min_match_score:.2f}",
+        f"Outline mode: {outline_mode}",
+        f"Kept existing bookmarks: {kept_bookmark_count}",
         "",
         "Decisions:",
     ]
     if not analysis.toc_entries:
         log_lines.append("No TOC entries detected; output PDF copied without generated bookmarks.")
+    elif outline_mode == "keep":
+        log_lines.append(
+            "Existing outline kept; generated bookmarks were not added."
+        )
 
     for entry in analysis.toc_entries:
+        if outline_mode == "keep":
+            continue
+        if outline_mode == "merge" and _normalize_title(entry.title) in existing_outline_items:
+            parent_by_level[entry.level] = existing_outline_items[_normalize_title(entry.title)]
+            accepted_entry_by_level[entry.level] = entry
+            _clear_deeper_levels(parent_by_level, entry.level)
+            _clear_deeper_levels(accepted_entry_by_level, entry.level)
+            log_lines.append(
+                _format_log_line(
+                    entry,
+                    {
+                        "write": False,
+                        "threshold": min_match_score,
+                        "reason": "already present in the existing outline",
+                    },
+                )
+            )
+            continue
         decision = _evaluate_entry(
             analysis.toc_entries,
             entry,
@@ -88,16 +141,28 @@ def write_bookmarks_for_pdf(
         _clear_deeper_levels(parent_by_level, entry.level)
         _clear_deeper_levels(accepted_entry_by_level, entry.level)
         written_count += 1
-        pending_link_entries.append(entry)
         log_lines.append(_format_log_line(entry, decision))
 
     finish_stats = finish_pdf_pages(writer.pages, watermark=watermark)
     link_log_lines: List[str] = []
-    for entry in pending_link_entries:
-        link_decision = _try_add_toc_link_annotation(writer, entry)
-        if link_decision["linked"]:
-            link_annotation_count += 1
-        link_log_lines.append(_format_link_log_line(entry, link_decision))
+    # Links are a separate pass from bookmark generation. A kept outline still
+    # gets contents rows linked to the bookmarks that are already there.
+    if not links:
+        link_log_lines.append("TOC link annotations disabled.")
+    else:
+        catalog = _destination_catalog(writer)
+        for entry in analysis.toc_entries:
+            target_page, dest_array, match_reason = _link_target_for_entry(entry, catalog)
+            link_decision = _try_add_toc_link_annotation(
+                writer,
+                entry,
+                target_page_index=target_page,
+                dest_array=dest_array,
+                match_reason=match_reason,
+            )
+            if link_decision["linked"]:
+                link_annotation_count += 1
+            link_log_lines.append(_format_link_log_line(entry, link_decision))
 
     log_lines.extend(["", "TOC link annotations:"])
     if link_log_lines:
@@ -113,6 +178,10 @@ def write_bookmarks_for_pdf(
             f"TOC link annotations: {link_annotation_count}",
         ]
     )
+    log_lines.extend(_format_finish_issue_lines(finish_stats))
+    # Watermarking merges an uncompressed content stream into every page.
+    # Reflate after that merge so a footer does not inflate the file.
+    _compress_content_streams(writer)
     with destination.open("wb") as handle:
         writer.write(handle)
     log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
@@ -125,7 +194,134 @@ def write_bookmarks_for_pdf(
         cropped_page_count=finish_stats.cropped_page_count,
         watermarked_page_count=finish_stats.watermarked_page_count,
         link_annotation_count=link_annotation_count,
+        kept_bookmark_count=kept_bookmark_count,
+        outline_mode=outline_mode,
     )
+
+
+def _count_outline_items(outline: Any) -> int:
+    """@brief Count bookmark nodes in a pypdf outline tree.
+
+    @param outline Outline sequence, or anything that is not a sequence.
+    @return Number of title-bearing outline items. Nested lists are walked.
+    """
+    if not outline or isinstance(outline, (str, bytes)):
+        return 0
+    try:
+        items = list(outline)
+    except TypeError:
+        return 0
+    count = 0
+    for item in items:
+        if isinstance(item, list):
+            count += _count_outline_items(item)
+            continue
+        title = getattr(item, "title", None)
+        if isinstance(title, str) and title.strip():
+            count += 1
+        elif isinstance(item, dict) and item.get("title"):
+            count += 1
+    return count
+
+
+def _index_outline_by_title(writer: Any) -> Dict[str, Any]:
+    """@brief Map a normalized bookmark title to its outline node.
+
+    The first occurrence wins so later duplicates do not steal the parent a
+    merged child should hang from.
+    """
+    indexed: Dict[str, Any] = {}
+    outline = getattr(writer, "outline", None)
+    if not outline:
+        return indexed
+    try:
+        items = list(outline)
+    except TypeError:
+        return indexed
+
+    def visit(nodes: List[Any]) -> None:
+        for item in nodes:
+            if isinstance(item, list):
+                visit(item)
+                continue
+            title = getattr(item, "title", None)
+            if isinstance(title, str) and title.strip():
+                # ``outline`` yields detached Destination copies. Children have
+                # to be attached to the live tree node or they never show up.
+                indexed.setdefault(_normalize_title(title), getattr(item, "node", None) or item)
+
+    visit(items)
+    return indexed
+
+
+def _copy_document_metadata(reader: Any, writer: Any) -> None:
+    """@brief Copy the info dictionary and catalog ``/Lang`` onto the writer.
+
+    ``append`` copies pages and, when asked, the outline. It does not copy
+    ``/Info`` or the catalog language, so Title, Author, and Lang would
+    otherwise disappear from the finished file.
+    """
+    info = getattr(reader, "metadata", None)
+    add_metadata = getattr(writer, "add_metadata", None)
+    if info is not None and callable(add_metadata):
+        payload: Dict[str, str] = {}
+        try:
+            items = list(info.items())
+        except (AttributeError, TypeError):
+            items = []
+        for key, value in items:
+            if value is None:
+                continue
+            payload[str(key)] = str(value)
+        if payload:
+            add_metadata(payload)
+    lang = _document_language(reader)
+    root = getattr(writer, "_root_object", None)
+    if lang and root is not None:
+        from pypdf.generic import NameObject, TextStringObject
+
+        root[NameObject("/Lang")] = TextStringObject(lang)
+
+
+def _document_language(reader: Any) -> Optional[str]:
+    """@brief Read catalog ``/Lang`` from a reader, if it has one."""
+    root = getattr(reader, "root_object", None)
+    if root is None:
+        trailer = getattr(reader, "trailer", None)
+        if trailer is not None:
+            try:
+                root = trailer.get("/Root")
+            except (AttributeError, TypeError):
+                root = None
+    if root is None:
+        return None
+    try:
+        lang = root.get("/Lang")
+    except (AttributeError, TypeError):
+        return None
+    if lang is None:
+        return None
+    text = str(lang).strip()
+    return text or None
+
+
+def _compress_content_streams(writer: Any) -> None:
+    """@brief Flate-compress each page content stream after finishing.
+
+    Pages that are not attached to a writer (unit-test stand-ins) are skipped.
+    A failure to compress one page must not discard the finished document.
+    """
+    pages = getattr(writer, "pages", None)
+    if not pages:
+        return
+    for page in pages:
+        compress = getattr(page, "compress_content_streams", None)
+        if not callable(compress):
+            continue
+        try:
+            compress()
+        except (AttributeError, TypeError, ValueError):
+            continue
 
 
 def _evaluate_entry(
@@ -264,6 +460,24 @@ def _create_writer() -> Any:
     return PdfWriter()
 
 
+def _format_finish_issue_lines(finish_stats: Any) -> List[str]:
+    """@brief Describe page-box repairs and pages the finisher had to skip.
+
+    @param finish_stats FinishStats from the finishing pass (older test doubles
+                        without the new fields are accepted).
+    @return Log lines with one-based page numbers; empty when nothing happened.
+    """
+    lines: List[str] = []
+    for index, note in getattr(finish_stats, "box_notes", ()) or ():
+        lines.append(f"BOX page {index + 1}: {note}")
+    skipped = getattr(finish_stats, "skipped_pages", ()) or ()
+    if skipped:
+        lines.append(f"Pages left unfinished: {len(skipped)}")
+    for index, reason in skipped:
+        lines.append(f"SKIP page {index + 1}: {reason}")
+    return lines
+
+
 def _format_log_line(entry: TocEntry, decision: Dict[str, Any]) -> str:
     """@brief Format one human-readable log line for a write/skip decision."""
     outcome = "WRITE" if decision["write"] else "SKIP "
@@ -275,11 +489,29 @@ def _format_log_line(entry: TocEntry, decision: Dict[str, Any]) -> str:
         f"{entry.title} | {decision['reason']}"
     )
 
-def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]:
-    """@brief Place a conservative in-page TOC link annotation when geometry is clear.
+def _try_add_toc_link_annotation(
+    writer: Any,
+    entry: TocEntry,
+    target_page_index: Optional[int] = None,
+    dest_array: Any = None,
+    match_reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """@brief Place one in-page TOC link when the row's geometry is clear.
 
-    Uncertain cases are skipped: missing TOC page/rectangle, missing destination,
-    out-of-range page indexes, or a writer that cannot accept annotations.
+    ``target_page_index`` overrides the entry's anchor when the row was matched
+    to an existing bookmark or named destination. ``dest_array`` is that
+    destination's exact view (page plus fit); a bare page index is used when
+    the row only resolved to a page.
+
+    An existing link that already covers this rectangle and the same page is
+    left in place so repeated runs do not stack duplicates.
+
+    @param writer PDF writer that receives the annotation.
+    @param entry TOC row being linked.
+    @param target_page_index Destination page. ``None`` uses the entry anchor.
+    @param dest_array Optional exact destination array to reuse.
+    @param match_reason Why this destination was chosen, for the log.
+    @return Decision dictionary with ``linked``, ``reason``, and sometimes ``rect``.
     """
     rect = _toc_link_rectangle(entry)
     if rect is None:
@@ -287,7 +519,8 @@ def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]
             "linked": False,
             "reason": "missing or uncertain TOC text rectangle",
         }
-    if entry.toc_page_index is None or entry.anchor_page_index is None:
+    destination_page = entry.anchor_page_index if target_page_index is None else target_page_index
+    if entry.toc_page_index is None or destination_page is None:
         return {
             "linked": False,
             "reason": "missing TOC page or destination",
@@ -300,10 +533,10 @@ def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]
                 "linked": False,
                 "reason": f"TOC page index {entry.toc_page_index} out of range",
             }
-        if not (0 <= entry.anchor_page_index < page_count):
+        if not (0 <= destination_page < page_count):
             return {
                 "linked": False,
-                "reason": f"destination page index {entry.anchor_page_index} out of range",
+                "reason": f"destination page index {destination_page} out of range",
             }
         fitted = _fit_rect_to_page(rect, pages[entry.toc_page_index])
         if fitted is None:
@@ -312,6 +545,13 @@ def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]
                 "reason": "TOC text rectangle falls outside the TOC page",
             }
         rect = fitted
+        if _page_already_links(pages[entry.toc_page_index], rect, destination_page, writer):
+            return {
+                "linked": False,
+                "reason": "existing link already covers this TOC row",
+                "rect": rect,
+                "target_page": destination_page,
+            }
     add_annotation = getattr(writer, "add_annotation", None)
     if not callable(add_annotation):
         return {
@@ -319,18 +559,182 @@ def _try_add_toc_link_annotation(writer: Any, entry: TocEntry) -> Dict[str, Any]
             "reason": "writer does not support annotations",
         }
     try:
-        annotation = _create_internal_link_annotation(rect, entry.anchor_page_index)
+        annotation = _create_internal_link_annotation(
+            rect, destination_page, dest_array=dest_array
+        )
         add_annotation(entry.toc_page_index, annotation)
     except Exception as exc:  # noqa: BLE001 - keep bookmark writing resilient
         return {
             "linked": False,
             "reason": f"annotation failed: {exc}",
         }
+    reason = match_reason or "TOC text rectangle linked to resolved destination"
     return {
         "linked": True,
-        "reason": "TOC text rectangle linked to resolved destination",
+        "reason": reason,
         "rect": rect,
+        "target_page": destination_page,
     }
+
+
+def _link_target_for_entry(
+    entry: TocEntry,
+    catalog: Dict[str, Tuple[Optional[int], Any]],
+) -> Tuple[Optional[int], Any, str]:
+    """@brief Choose the destination a TOC row should link to.
+
+    Title match against an outline item or named destination wins. Otherwise
+    the row's resolved printed page, then its anchor page, is used.
+
+    @return ``(page index or None, destination array or None, reason)``.
+    """
+    found = catalog.get(_normalize_title(entry.title))
+    if found is not None and found[0] is not None:
+        return found[0], found[1], "matched bookmark or named destination by title"
+    resolved = getattr(entry, "resolved_page_index", None)
+    if isinstance(resolved, int):
+        return resolved, None, "resolved printed page"
+    if entry.anchor_page_index is not None:
+        return entry.anchor_page_index, None, "resolved page"
+    return None, None, "no bookmark, named destination, or resolved page"
+
+
+def _destination_catalog(writer: Any) -> Dict[str, Tuple[Optional[int], Any]]:
+    """@brief Index outline titles and named destinations by normalized title.
+
+    Outline titles are recorded first so a human-readable bookmark beats a
+    short named-destination id that happens to normalize the same way.
+    """
+    catalog: Dict[str, Tuple[Optional[int], Any]] = {}
+    for item in _iter_outline_items(getattr(writer, "outline", None)):
+        title = getattr(item, "title", None)
+        if not isinstance(title, str) or not title.strip():
+            continue
+        catalog.setdefault(
+            _normalize_title(title),
+            (_destination_page_index(writer, item), getattr(item, "dest_array", None)),
+        )
+    named = getattr(writer, "named_destinations", None) or {}
+    try:
+        pairs = list(named.items())
+    except (AttributeError, TypeError):
+        pairs = []
+    for name, dest in pairs:
+        key = _normalize_title(str(name))
+        if key in catalog:
+            continue
+        catalog[key] = (
+            _destination_page_index(writer, dest),
+            getattr(dest, "dest_array", None),
+        )
+    return catalog
+
+
+def _iter_outline_items(outline: Any) -> List[Any]:
+    """@brief Flatten an outline tree into destination nodes."""
+    if not outline or isinstance(outline, (str, bytes)):
+        return []
+    try:
+        items = list(outline)
+    except TypeError:
+        return []
+    flat: List[Any] = []
+
+    def visit(nodes: List[Any]) -> None:
+        for item in nodes:
+            if isinstance(item, list):
+                visit(item)
+                continue
+            flat.append(item)
+
+    visit(items)
+    return flat
+
+
+def _destination_page_index(writer: Any, destination: Any) -> Optional[int]:
+    """@brief Resolve a destination object to a zero-based page index."""
+    getter = getattr(writer, "get_destination_page_number", None)
+    if not callable(getter):
+        return None
+    try:
+        page = getter(destination)
+    except Exception:  # noqa: BLE001 - unreadable destinations are simply unmatched
+        return None
+    return page if isinstance(page, int) else None
+
+
+def _page_already_links(page: Any, rect: Tuple[float, float, float, float], target_page: int, writer: Any) -> bool:
+    """@brief Report whether this rectangle already links to ``target_page``.
+
+    Existing annotations are kept. A second link is skipped only when it would
+    cover the same row and the same destination.
+    """
+    annots = getattr(page, "annotations", None)
+    if not annots and hasattr(page, "get"):
+        try:
+            annots = page.get("/Annots")
+        except (AttributeError, TypeError):
+            annots = None
+    if not annots:
+        return False
+    for annot in annots:
+        obj = annot.get_object() if hasattr(annot, "get_object") else annot
+        try:
+            subtype = str(obj.get("/Subtype"))
+        except (AttributeError, TypeError):
+            continue
+        if subtype != "/Link":
+            continue
+        existing = obj.get("/Rect")
+        if existing is None:
+            continue
+        try:
+            existing_rect = tuple(float(value) for value in existing)
+        except (TypeError, ValueError):
+            continue
+        if len(existing_rect) != 4 or not _rects_overlap(existing_rect, rect):
+            continue
+        existing_page = _annotation_target_page(writer, obj)
+        if existing_page is None or existing_page == target_page:
+            return True
+    return False
+
+
+def _annotation_target_page(writer: Any, annotation: Any) -> Optional[int]:
+    """@brief Read the page index a link annotation points at, if it can."""
+    try:
+        dest = annotation.get("/Dest")
+        if dest is None and annotation.get("/A") is not None:
+            action = annotation["/A"]
+            action = action.get_object() if hasattr(action, "get_object") else action
+            dest = action.get("/D")
+    except (AttributeError, TypeError):
+        return None
+    if dest is None:
+        return None
+    if isinstance(dest, dict) and "target_page_index" in dest:
+        try:
+            return int(dest["target_page_index"])
+        except (TypeError, ValueError):
+            return None
+    return _destination_page_index(writer, dest)
+
+
+def _rects_overlap(
+    first: Tuple[float, float, float, float],
+    second: Tuple[float, float, float, float],
+    ratio: float = 0.5,
+) -> bool:
+    """@brief Report whether two rectangles cover enough of each other to be the same row."""
+    x0 = max(first[0], second[0])
+    y0 = max(first[1], second[1])
+    x1 = min(first[2], second[2])
+    y1 = min(first[3], second[3])
+    if x1 <= x0 or y1 <= y0:
+        return False
+    intersection = (x1 - x0) * (y1 - y0)
+    area = max((second[2] - second[0]) * (second[3] - second[1]), 1.0)
+    return intersection / area >= ratio
 
 
 def _toc_link_rectangle(entry: TocEntry) -> Optional[Tuple[float, float, float, float]]:
@@ -420,8 +824,32 @@ def _fit_rect_to_page(
 def _create_internal_link_annotation(
     rect: Tuple[float, float, float, float],
     target_page_index: int,
+    dest_array: Any = None,
 ) -> Any:
-    """@brief Construct a borderless internal PDF link annotation."""
+    """@brief Construct a borderless internal PDF link annotation.
+
+    When ``dest_array`` is the bookmark's own destination, the link uses that
+    exact view (page and fit) instead of a generic page fit.
+    """
+    if dest_array is not None:
+        from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject, RectangleObject
+
+        cloned = ArrayObject()
+        for value in dest_array:
+            cloned.append(value)
+        annotation = DictionaryObject()
+        annotation.update(
+            {
+                NameObject("/Type"): NameObject("/Annot"),
+                NameObject("/Subtype"): NameObject("/Link"),
+                NameObject("/Rect"): RectangleObject(rect),
+                NameObject("/Border"): ArrayObject(
+                    [NumberObject(0), NumberObject(0), NumberObject(0)]
+                ),
+                NameObject("/Dest"): cloned,
+            }
+        )
+        return annotation
     try:
         from pypdf.annotations import Link
     except ImportError as exc:
@@ -439,7 +867,8 @@ def _format_link_log_line(entry: TocEntry, decision: Dict[str, Any]) -> str:
     """@brief Format one human-readable TOC link annotation decision."""
     outcome = "LINK " if decision["linked"] else "SKIP "
     toc_page = "?" if entry.toc_page_index is None else str(entry.toc_page_index)
-    dest = "?" if entry.anchor_page_index is None else str(entry.anchor_page_index)
+    target_page = decision.get("target_page", entry.anchor_page_index)
+    dest = "?" if target_page is None else str(target_page)
     rect = decision.get("rect")
     rect_text = (
         f"({rect[0]:.1f},{rect[1]:.1f},{rect[2]:.1f},{rect[3]:.1f})"

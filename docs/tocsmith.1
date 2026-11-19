@@ -1,4 +1,4 @@
-.TH TOCSMITH 1 "October 4, 2026" "TocSmith 1.1.0 (348)" "User Commands"
+.TH TOCSMITH 1 "November 15, 2026" "TocSmith 1.1.1 (349)" "User Commands"
 .SH NAME
 tocsmith \- forge navigable, finished PDFs from printed tables of contents
 .SH SYNOPSIS
@@ -48,6 +48,24 @@ threshold.
 Set the footer text written on generated pages. The default is
 .BR TocSmith .
 Pass an empty string to disable the footer.
+.TP
+.BI \-\-outline " mode"
+How to treat an outline already in the PDF.
+.B keep
+(the default when the source has one) leaves it unchanged.
+.B merge
+adds only generated entries whose titles are missing.
+.B replace
+discards the existing outline and writes the generated one.
+When the source has no outline, TocSmith generates one.
+.TP
+.BR \-\-links ", " \-\-no\-links
+Place borderless links over contents rows (the default). Each row is matched
+to an existing bookmark or named destination by title, or to its resolved
+page. Existing links are kept, and a row that is already linked is not
+linked again.
+.B \-\-no\-links
+skips this pass.
 .SH OUTPUT FILES
 For an input named
 .BR manual.pdf ,
