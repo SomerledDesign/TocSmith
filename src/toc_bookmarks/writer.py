@@ -178,6 +178,7 @@ def write_bookmarks_for_pdf(
             f"TOC link annotations: {link_annotation_count}",
         ]
     )
+    log_lines.extend(_format_finish_issue_lines(finish_stats))
     # Watermarking merges an uncompressed content stream into every page.
     # Reflate after that merge so a footer does not inflate the file.
     _compress_content_streams(writer)
@@ -457,6 +458,24 @@ def _create_writer() -> Any:
             "pypdf is required for PDF bookmark writing. Install dependencies first."
         ) from exc
     return PdfWriter()
+
+
+def _format_finish_issue_lines(finish_stats: Any) -> List[str]:
+    """@brief Describe page-box repairs and pages the finisher had to skip.
+
+    @param finish_stats FinishStats from the finishing pass (older test doubles
+                        without the new fields are accepted).
+    @return Log lines with one-based page numbers; empty when nothing happened.
+    """
+    lines: List[str] = []
+    for index, note in getattr(finish_stats, "box_notes", ()) or ():
+        lines.append(f"BOX page {index + 1}: {note}")
+    skipped = getattr(finish_stats, "skipped_pages", ()) or ()
+    if skipped:
+        lines.append(f"Pages left unfinished: {len(skipped)}")
+    for index, reason in skipped:
+        lines.append(f"SKIP page {index + 1}: {reason}")
+    return lines
 
 
 def _format_log_line(entry: TocEntry, decision: Dict[str, Any]) -> str:
